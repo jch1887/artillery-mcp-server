@@ -15,7 +15,7 @@ import {
 import { ServerConfig, MCPTool } from './types.js';
 import { z } from 'zod';
 
-const SERVER_VERSION = '1.0.2';
+const SERVER_VERSION = '1.0.3';
 const serverDebug = debug('artillery:mcp:server');
 const errorsDebug = debug('artillery:mcp:errors');
 
