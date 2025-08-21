@@ -1,0 +1,25 @@
+config:
+  target: 'https://httpbin.org'
+  phases:
+    - duration: 10
+      arrivalRate: 5
+    - duration: 5
+      arrivalRate: 0
+  defaults:
+    headers:
+      User-Agent: 'Artillery-MCP-Server/1.0.0'
+
+scenarios:
+  - name: "Basic HTTP test"
+    requests:
+      - get:
+          url: "/get"
+      - post:
+          url: "/post"
+          json:
+            message: "Hello from Artillery MCP Server"
+            timestamp: "{{ $timestamp }}"
+      - get:
+          url: "/status/200"
+      - get:
+          url: "/delay/1"
