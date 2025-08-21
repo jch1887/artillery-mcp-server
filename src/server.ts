@@ -2,9 +2,8 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import pino from 'pino';
+import debug from 'debug';
 import { promises as fs } from 'fs';
-import path from 'path';
 import { ArtilleryWrapper } from './lib/artillery.js';
 import {
   RunTestFromFileTool,
@@ -16,34 +15,28 @@ import {
 import { ServerConfig, MCPTool } from './types.js';
 import { 
   CallToolRequestSchema, 
-  Tool, 
-  ToolSchema,
-  CallToolResultSchema 
+  Tool
 } from '@modelcontextprotocol/sdk/types.js';
 
 const SERVER_VERSION = '1.0.0';
+const serverDebug = debug('artillery:mcp:server');
+const errorsDebug = debug('artillery:mcp:errors');
 
 class ArtilleryMCPServer {
   private server: Server;
-  private logger: pino.Logger;
   private config!: ServerConfig;
   private artillery!: ArtilleryWrapper;
   private tools: Tool[] = [];
 
   constructor() {
-    this.logger = pino({
-      level: process.env.LOG_LEVEL || 'info',
-      transport: {
-        target: 'pino-pretty',
-        options: {
-          colorize: true
-        }
-      }
-    });
-
     this.server = new Server({
       name: 'artillery-mcp-server',
       version: SERVER_VERSION,
+    });
+
+    // Register required capabilities for tools
+    this.server.registerCapabilities({
+      tools: {},
     });
 
     this.setupTransport();
@@ -60,12 +53,12 @@ class ArtilleryMCPServer {
     process.on('SIGTERM', () => this.gracefulShutdown());
     
     process.on('uncaughtException', (error) => {
-      this.logger.error('Uncaught exception:', error);
+      errorsDebug('Uncaught exception:', error);
       this.gracefulShutdown(1);
     });
 
     process.on('unhandledRejection', (reason, promise) => {
-      this.logger.error('Unhandled rejection at:', promise, 'reason:', reason);
+      errorsDebug('Unhandled rejection at:', promise, 'reason:', reason);
       this.gracefulShutdown(1);
     });
   }
@@ -80,21 +73,32 @@ class ArtilleryMCPServer {
       allowQuick: process.env.ARTILLERY_ALLOW_QUICK === 'true'
     };
 
+    serverDebug('Initial config loaded:', {
+      artilleryBin: config.artilleryBin,
+      workDir: config.workDir,
+      timeoutMs: config.timeoutMs,
+      maxOutputMb: config.maxOutputMb,
+      allowQuick: config.allowQuick
+    });
+
     // Validate and detect Artillery binary
     try {
-      config.artilleryBin = await ArtilleryWrapper.detectBinary();
-      this.logger.info('Artillery binary detected:', config.artilleryBin);
+      const detectedBinary = await ArtilleryWrapper.detectBinary();
+      serverDebug('Artillery binary detected:', detectedBinary);
+      
+      config.artilleryBin = detectedBinary;
+      serverDebug('Config.artilleryBin after assignment:', config.artilleryBin);
     } catch (error) {
-      this.logger.error('Failed to detect Artillery binary:', error);
+      errorsDebug('Failed to detect Artillery binary:', error);
       throw error;
     }
 
     // Validate working directory
     try {
       await fs.access(config.workDir);
-      this.logger.info('Working directory:', config.workDir);
+      serverDebug('Working directory:', config.workDir);
     } catch (error) {
-      this.logger.error('Working directory not accessible:', config.workDir);
+      errorsDebug('Working directory not accessible:', config.workDir, error);
       throw error;
     }
 
@@ -108,7 +112,15 @@ class ArtilleryMCPServer {
       throw new Error('ARTILLERY_MAX_OUTPUT_MB must be between 1 and 100');
     }
 
-    this.logger.info('Configuration loaded successfully');
+    serverDebug('Configuration loaded successfully');
+    serverDebug('Final config:', {
+      artilleryBin: config.artilleryBin,
+      workDir: config.workDir,
+      timeoutMs: config.timeoutMs,
+      maxOutputMb: config.maxOutputMb,
+      allowQuick: config.allowQuick
+    });
+    
     return config;
   }
 
@@ -132,17 +144,16 @@ class ArtilleryMCPServer {
       };
 
       this.tools.push(toolSchema);
-
-      this.logger.info(`Tool registered: ${tool.name}`);
+      serverDebug('Tool registered:', tool.name);
     }
 
-    // Register a single request handler for all tool calls
+    // Register request handlers
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const toolName = request.params?.name;
       const tool = toolInstances.find(t => t.name === toolName);
       
       if (!tool) {
-        this.logger.warn(`Unknown tool requested: ${toolName}`);
+        serverDebug('Unknown tool requested:', toolName);
         return {
           content: [
             {
@@ -160,11 +171,11 @@ class ArtilleryMCPServer {
         };
       }
 
-      this.logger.info(`Tool called: ${tool.name}`);
+      serverDebug('Tool called:', tool.name);
       
       try {
         const result = await tool.call(request);
-        this.logger.info(`Tool completed: ${tool.name}`, { status: result.status });
+        serverDebug('Tool completed:', tool.name, { status: result.status });
         
         // Convert to MCP result format
         return {
@@ -176,7 +187,7 @@ class ArtilleryMCPServer {
           ]
         };
       } catch (error) {
-        this.logger.error(`Tool failed: ${tool.name}`, { 
+        errorsDebug('Tool failed:', tool.name, { 
           error: error instanceof Error ? error.message : error 
         });
         
@@ -203,14 +214,14 @@ class ArtilleryMCPServer {
   }
 
   private async gracefulShutdown(exitCode = 0) {
-    this.logger.info('Shutting down gracefully...');
+    serverDebug('Shutting down gracefully...');
     
     try {
       // Close server connections
       await this.server.close();
-      this.logger.info('Server closed successfully');
+      serverDebug('Server closed successfully');
     } catch (error) {
-      this.logger.error('Error during shutdown:', error);
+      errorsDebug('Error during shutdown:', error);
     }
 
     process.exit(exitCode);
@@ -218,7 +229,7 @@ class ArtilleryMCPServer {
 
   async start() {
     try {
-      this.logger.info('Starting Artillery MCP Server...');
+      serverDebug('Starting Artillery MCP Server...');
       
       // Load configuration
       this.config = await this.loadConfiguration();
@@ -226,16 +237,16 @@ class ArtilleryMCPServer {
       // Register tools
       await this.registerTools();
       
-      this.logger.info('Artillery MCP Server started successfully');
-      this.logger.info('Server version:', SERVER_VERSION);
-      this.logger.info('Artillery binary:', this.config.artilleryBin);
-      this.logger.info('Working directory:', this.config.workDir);
-      this.logger.info('Timeout (ms):', this.config.timeoutMs);
-      this.logger.info('Max output (MB):', this.config.maxOutputMb);
-      this.logger.info('Quick tests enabled:', this.config.allowQuick);
+      serverDebug('Artillery MCP Server started successfully');
+      serverDebug('Server version:', SERVER_VERSION);
+      serverDebug('Artillery binary:', this.config.artilleryBin);
+      serverDebug('Working directory:', this.config.workDir);
+      serverDebug('Timeout (ms):', this.config.timeoutMs);
+      serverDebug('Max output (MB):', this.config.maxOutputMb);
+      serverDebug('Quick tests enabled:', this.config.allowQuick);
       
     } catch (error) {
-      this.logger.error('Failed to start server:', error);
+      errorsDebug('Failed to start server:', error);
       process.exit(1);
     }
   }
