@@ -79,11 +79,11 @@ jspm_packages/
 # TernJS port file
 .tern-port
 
-# Artillery test results
+# Artillery test results (but not package-lock.json)
 results/
 reports/
-*.json
-*.html
+results/*.json
+reports/*.html
 
 # Temporary files
 temp/
