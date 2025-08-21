@@ -19,7 +19,20 @@ A production-ready Model Context Protocol (MCP) server that exposes safe, ergono
 
 ## Installation
 
-### 1. Install Artillery CLI
+### Option 1: Install from npm (Recommended)
+
+```bash
+# Install globally
+npm install -g @jch1887/artillery-mcp-server
+
+# Or use npx (no installation needed)
+npx @jch1887/artillery-mcp-server
+
+# Verify installation
+artillery-mcp-server --version
+```
+
+### Option 2: Install Artillery CLI
 
 ```bash
 # Using npm
@@ -32,11 +45,11 @@ yarn global add artillery
 artillery --version
 ```
 
-### 2. Install Artillery MCP Server
+### Option 3: Install Artillery MCP Server from source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/artillery-mcp-server.git
+git clone https://github.com/jch1887/artillery-mcp-server.git
 cd artillery-mcp-server
 
 # Install dependencies
@@ -44,6 +57,9 @@ npm install
 
 # Build the project
 npm run build
+
+# Run the server
+npm start
 ```
 
 ## Configuration
@@ -70,6 +86,26 @@ export LOG_LEVEL=debug
 ```
 
 ## Usage
+
+### Global Installation
+
+```bash
+# Start the server
+artillery-mcp-server
+
+# With custom configuration
+ARTILLERY_WORKDIR="/path/to/tests" artillery-mcp-server
+```
+
+### npx Usage (No Installation)
+
+```bash
+# Run directly without installing
+npx @jch1887/artillery-mcp-server
+
+# With custom configuration
+ARTILLERY_WORKDIR="/path/to/tests" npx @jch1887/artillery-mcp-server
+```
 
 ### Development Mode
 
@@ -107,8 +143,7 @@ Add to your `claude_desktop_config.json`:
 {
   "mcpServers": {
     "artillery": {
-      "command": "node",
-      "args": ["/path/to/artillery-mcp-server/dist/server.js"],
+      "command": "artillery-mcp-server",
       "env": {
         "ARTILLERY_WORKDIR": "/path/to/test/configs",
         "ARTILLERY_ALLOW_QUICK": "true"
@@ -126,8 +161,7 @@ Add to your Cursor settings:
 {
   "mcp.servers": {
     "artillery": {
-      "command": "node",
-      "args": ["/path/to/artillery-mcp-server/dist/server.js"],
+      "command": "artillery-mcp-server",
       "env": {
         "ARTILLERY_WORKDIR": "/path/to/test/configs"
       }
@@ -142,9 +176,7 @@ Add to your Cursor settings:
 {
   "mcpServers": {
     "artillery": {
-      "command": "node",
-      "args": ["/path/to/artillery-mcp-server/dist/server.js"],
-      "cwd": "/path/to/artillery-mcp-server",
+      "command": "artillery-mcp-server",
       "env": {
         "ARTILLERY_WORKDIR": "/path/to/test/configs"
       }
@@ -493,7 +525,7 @@ chmod +x $ARTILLERY_BIN
 # Increase timeout for long-running tests
 export ARTILLERY_TIMEOUT_MS=3600000  # 1 hour
 
-# Check test configuration for infinite loops
+# Check for infinite loops in test config
 ```
 
 ### Output Size Issues
@@ -519,8 +551,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/artillery-mcp-server/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/artillery-mcp-server/discussions)
+- **Issues**: [GitHub Issues](https://github.com/jch1887/artillery-mcp-server/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/jch1887/artillery-mcp-server/discussions)
 - **Documentation**: [Artillery Docs](https://www.artillery.io/docs)
 
 ## Acknowledgments
