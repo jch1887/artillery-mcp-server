@@ -1,0 +1,54 @@
+{
+  "aggregate": {
+    "counters": {
+      "vusers.created": 10,
+      "vusers.completed": 10,
+      "http.requests": 40,
+      "http.responses": 40,
+      "http.response_time": 40,
+      "http.codes.200": 40
+    },
+    "rates": {
+      "http.requests": 2.0,
+      "vusers.created": 0.5,
+      "vusers.completed": 0.5
+    },
+    "first": {
+      "http.response_time": 120,
+      "http.requests": "2025-01-21T10:00:00.000Z"
+    },
+    "last": {
+      "http.response_time": 180,
+      "http.requests": "2025-01-21T10:00:20.000Z"
+    }
+  },
+  "metrics": {
+    "http": {
+      "requests": {
+        "count": 40,
+        "rate": 2.0
+      },
+      "response_time": {
+        "min": 120,
+        "max": 450,
+        "median": 180,
+        "p95": 280,
+        "p99": 410
+      },
+      "codes": {
+        "200": 40
+      },
+      "errors": {}
+    }
+  },
+  "scenarios": [
+    {
+      "name": "Basic HTTP test",
+      "count": 10,
+      "successRate": 100,
+      "avgLatency": 180
+    }
+  ],
+  "timestamp": "2025-01-21T10:00:00.000Z",
+  "duration": "20s"
+}

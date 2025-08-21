@@ -1,0 +1,42 @@
+{
+  "config": {
+    "target": "https://jsonplaceholder.typicode.com",
+    "phases": [
+      {
+        "duration": 30,
+        "arrivalRate": 2
+      },
+      {
+        "duration": 10,
+        "arrivalRate": 0
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "API Endpoints Test",
+      "requests": [
+        {
+          "get": {
+            "url": "/posts/1"
+          }
+        },
+        {
+          "get": {
+            "url": "/users/1"
+          }
+        },
+        {
+          "post": {
+            "url": "/posts",
+            "json": {
+              "title": "Test Post",
+              "body": "This is a test post from Artillery MCP Server",
+              "userId": 1
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
