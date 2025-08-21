@@ -1,6 +1,6 @@
 {
   "name": "@jch1887/artillery-mcp-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "MCP server for Artillery load testing",
   "main": "dist/server.js",
   "bin": {
