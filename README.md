@@ -213,6 +213,8 @@ Run an Artillery test from a config file.
 
 Run an Artillery test from inline configuration.
 
+**Note:** Artillery 2.0+ requires using `flow` instead of `requests` in scenarios. See the example below for the correct format.
+
 **Parameters:**
 - `configText` (required): Artillery config as YAML/JSON string
 - `outputJson` (optional): Path for JSON results output
@@ -222,11 +224,29 @@ Run an Artillery test from inline configuration.
 - `validateOnly` (optional): Dry-run validation only
 
 **Example:**
-```json
-{
-  "configText": "config:\n  target: 'https://example.com'\n  phases:\n    - duration: 10\n      arrivalRate: 5",
-  "outputJson": "/path/to/results.json"
-}
+```yaml
+# Artillery 2.0 Configuration Format
+configText: |
+  config:
+    target: 'https://sighthoundnoir.co.uk'
+    phases:
+      - duration: 60
+        arrivalCount: 3
+    defaults:
+      headers:
+        User-Agent: 'Artillery-MCP-Server/1.0.0'
+  
+  scenarios:
+    - name: "Load Test"
+      flow:
+        - get:
+            url: /
+        - think: 1
+        - get:
+            url: /
+        - think: 1
+        - get:
+            url: /
 ```
 
 ### 3. `quick_test`
