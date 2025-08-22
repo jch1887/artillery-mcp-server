@@ -30,19 +30,21 @@ export class ParseResultsTool implements MCPTool {
       // Parse the results
       const results = await this.artillery.parseResults(jsonPath);
       
-      // Extract summary
-      const metrics = results.metrics || {};
-      const http = metrics.http || {};
+      // Extract summary using Artillery 2.0 format
+      const aggregate = results.aggregate || {};
+      const counters = aggregate.counters || {};
+      const rates = aggregate.rates || {};
+      const summaries = aggregate.summaries || {};
       
       const summary = {
-        requestsTotal: http.requests?.count || 0,
-        rpsAvg: http.requests?.rate || 0,
+        requestsTotal: counters['http.requests'] || 0,
+        rpsAvg: rates['http.request_rate'] || 0,
         latencyMs: {
-          p50: http.response_time?.p50 || 0,
-          p95: http.response_time?.p95 || 0,
-          p99: http.response_time?.p99 || 0
+          p50: summaries['http.response_time']?.p50 || 0,
+          p95: summaries['http.response_time']?.p95 || 0,
+          p99: summaries['http.response_time']?.p99 || 0
         },
-        errors: http.errors || {}
+        errors: counters['http.errors'] || {}
       };
 
       // Extract scenario information
