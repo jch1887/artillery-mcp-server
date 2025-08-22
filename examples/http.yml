@@ -11,7 +11,7 @@ config:
 
 scenarios:
   - name: "Basic HTTP test"
-    requests:
+    flow:
       - get:
           url: "/get"
       - post:
