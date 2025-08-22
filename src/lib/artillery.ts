@@ -161,52 +161,97 @@ export class ArtilleryWrapper {
     body?: string;
   }): Promise<ArtilleryResult> {
     if (!this.config.allowQuick) {
-      throw new Error('Quick tests are disabled. Set ARTILLERY_ALLOW_QUICK=true to enable.');
+      throw new Error('Quick tests are disabled. Set ARTILLERY_ALLOW_QUICK=false to disable.');
     }
 
-    // Build quick test config
-    const config = {
-      target: options.target,
-      phases: [] as any[]
-    };
-
-    if (options.rate && options.duration) {
-      config.phases.push({
-        duration: options.duration,
-        arrivalRate: options.rate
-      });
-    } else if (options.count) {
-      config.phases.push({
-        duration: '1',
-        arrivalCount: options.count
-      });
-    } else {
-      config.phases.push({
-        duration: '1',
-        arrivalCount: 1
-      });
-    }
-
-    config.phases.push({
-      duration: '1',
-      arrivalRate: 0
-    });
-
-    const scenarios = [{
-      name: 'Quick test',
-      requests: [{
-        method: options.method || 'GET',
-        url: '/',
-        headers: options.headers,
-        ...(options.body && { body: options.body })
-      }]
-    }];
-
-    const configText = JSON.stringify({ ...config, scenarios }, null, 2);
+    // Use Artillery 2.0's quick command for simple tests
+    const args = ['quick'];
     
-    return await this.runTestInline(configText, {
-      outputJson: path.join(this.config.workDir, `quick-test-${Date.now()}.json`)
+    // Add target URL
+    args.push(options.target);
+    
+    // Add count (number of VUs)
+    if (options.count) {
+      args.push('-c', options.count.toString());
+    } else if (options.rate && options.duration) {
+      // Estimate count based on rate and duration
+      const durationSeconds = this.parseDuration(options.duration);
+      const estimatedCount = Math.ceil(options.rate * durationSeconds);
+      args.push('-c', estimatedCount.toString());
+    } else {
+      args.push('-c', '10'); // Default to 10 VUs
+    }
+    
+    // Add number of requests per VU
+    if (options.rate && options.duration) {
+      const durationSeconds = this.parseDuration(options.duration);
+      const vuCount = options.count || Math.ceil(options.rate * durationSeconds);
+      const requestsPerVU = Math.ceil(options.rate * durationSeconds / vuCount);
+      args.push('-n', requestsPerVU.toString());
+    } else if (options.duration && !options.rate) {
+      // If duration is specified but not rate, calculate requests to spread over duration
+      const durationSeconds = this.parseDuration(options.duration);
+      const requestsPerVU = Math.max(1, Math.ceil(durationSeconds / 2)); // Roughly 1 request every 2 seconds
+      args.push('-n', requestsPerVU.toString());
+    } else {
+      args.push('-n', '30'); // Default to 30 requests per VU
+    }
+    
+    // Add output file
+    const outputFile = path.join(this.config.workDir, `quick-test-${Date.now()}.json`);
+    args.push('-o', outputFile);
+    
+    // Add insecure flag if needed (for self-signed certs)
+    if (options.target.startsWith('https://')) {
+      args.push('-k');
+    }
+    
+    // Run the quick command
+    const startTime = Date.now();
+    const result = await this.runCommand(args, {
+      cwd: this.config.workDir,
+      timeout: this.config.timeoutMs
     });
+    const elapsedMs = Date.now() - startTime;
+    
+    // Parse summary if JSON output was generated
+    let summary: ArtillerySummary | undefined;
+    if (result.exitCode === 0) {
+      try {
+        summary = await this.parseSummary(outputFile);
+      } catch (error) {
+        // Log but don't fail the operation
+        console.warn('Failed to parse summary:', error);
+      }
+    }
+
+    return {
+      exitCode: result.exitCode,
+      elapsedMs,
+      logsTail: result.stdout.slice(-2048), // Last 2KB
+      jsonResultPath: outputFile,
+      htmlReportPath: undefined,
+      summary
+    };
+  }
+
+  /**
+   * Parse duration string to seconds
+   */
+  private parseDuration(duration: string): number {
+    const match = duration.match(/^(\d+)([smhd])?$/);
+    if (!match) return 1;
+    
+    const value = parseInt(match[1]);
+    const unit = match[2] || 's';
+    
+    switch (unit) {
+      case 's': return value;
+      case 'm': return value * 60;
+      case 'h': return value * 3600;
+      case 'd': return value * 86400;
+      default: return value;
+    }
   }
 
   /**
