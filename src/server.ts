@@ -62,7 +62,7 @@ async function loadConfiguration(): Promise<ServerConfig> {
     workDir: process.env.ARTILLERY_WORKDIR || process.cwd(),
     timeoutMs: parseInt(process.env.ARTILLERY_TIMEOUT_MS || '1800000'), // 30 minutes default
     maxOutputMb: parseInt(process.env.ARTILLERY_MAX_OUTPUT_MB || '10'), // 10MB default
-    allowQuick: process.env.ARTILLERY_ALLOW_QUICK === 'true'
+    allowQuick: process.env.ARTILLERY_ALLOW_QUICK !== 'false'
   };
 
   serverDebug('Initial config loaded:', {

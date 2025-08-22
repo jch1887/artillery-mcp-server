@@ -72,7 +72,7 @@ The server can be configured via environment variables:
 | `ARTILLERY_WORKDIR` | Current directory | Working directory for tests |
 | `ARTILLERY_TIMEOUT_MS` | 1800000 (30 min) | Maximum test execution time |
 | `ARTILLERY_MAX_OUTPUT_MB` | 10 | Maximum output capture size |
-| `ARTILLERY_ALLOW_QUICK` | false | Enable quick HTTP tests |
+| `ARTILLERY_ALLOW_QUICK` | true | Enable quick HTTP tests (set to 'false' to disable) |
 | `LOG_LEVEL` | info | Logging level (debug, info, warn, error) |
 
 ### Example Configuration
