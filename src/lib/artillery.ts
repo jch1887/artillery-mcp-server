@@ -272,19 +272,21 @@ export class ArtilleryWrapper {
   private async parseSummary(jsonPath: string): Promise<ArtillerySummary> {
     const results = await this.parseResults(jsonPath);
     
-    // Extract metrics from Artillery output format
-    const metrics = results.metrics || {};
-    const http = metrics.http || {};
+    // Extract metrics from Artillery 2.0 output format
+    const aggregate = results.aggregate || {};
+    const counters = aggregate.counters || {};
+    const rates = aggregate.rates || {};
+    const summaries = aggregate.summaries || {};
     
     return {
-      requestsTotal: http.requests?.count || 0,
-      rpsAvg: http.requests?.rate || 0,
+      requestsTotal: counters['http.requests'] || 0,
+      rpsAvg: rates['http.request_rate'] || 0,
       latencyMs: {
-        p50: http.response_time?.p50 || 0,
-        p95: http.response_time?.p95 || 0,
-        p99: http.response_time?.p99 || 0
+        p50: summaries['http.response_time']?.p50 || 0,
+        p95: summaries['http.response_time']?.p95 || 0,
+        p99: summaries['http.response_time']?.p99 || 0
       },
-      errors: http.errors || {}
+      errors: counters['http.errors'] || {}
     };
   }
 
