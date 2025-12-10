@@ -248,17 +248,24 @@ describe('MCP Tools', () => {
 
     it('should parse results and return summary', async () => {
       const tool = new ParseResultsTool(mockArtillery);
+      // Use Artillery 2.0 output format (aggregate.counters/rates/summaries)
       const mockResults = {
-        metrics: {
-          http: {
-            requests: { count: 100, rate: 10.5 },
-            response_time: { p50: 150, p95: 300, p99: 500 },
-            errors: { ETIMEDOUT: 5 }
+        aggregate: {
+          counters: {
+            'http.requests': 100
+          },
+          rates: {
+            'http.request_rate': 10.5
+          },
+          summaries: {
+            'http.response_time': { p50: 150, p95: 300, p99: 500 }
           }
         },
         scenarios: [
           { name: 'Test Scenario', count: 10, successRate: 95, avgLatency: 200 }
-        ]
+        ],
+        timestamp: '2025-01-21T10:00:00.000Z',
+        duration: '20s'
       };
 
       mockArtillery.parseResults.mockResolvedValue(mockResults);

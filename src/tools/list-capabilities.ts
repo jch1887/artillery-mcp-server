@@ -1,4 +1,4 @@
-import { MCPTool, ToolOutput, ServerCapabilities } from '../types.js';
+import { MCPTool, ToolOutput, ServerCapabilities, ServerConfig } from '../types.js';
 import { ArtilleryWrapper } from '../lib/artillery.js';
 
 export class ListCapabilitiesTool implements MCPTool {
@@ -11,7 +11,7 @@ export class ListCapabilitiesTool implements MCPTool {
 
   constructor(
     private artillery: ArtilleryWrapper,
-    private config: any,
+    private config: ServerConfig,
     private serverVersion: string
   ) {}
 

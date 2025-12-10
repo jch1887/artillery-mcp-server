@@ -189,6 +189,16 @@ describe('ArtilleryWrapper', () => {
       vi.mocked(fs.access).mockResolvedValue(undefined);
       vi.mocked(fs.unlink).mockResolvedValue(undefined);
       
+      // Mock readFile to return valid Artillery 2.0 JSON results
+      const mockResults = JSON.stringify({
+        aggregate: {
+          counters: { 'http.requests': 300 },
+          rates: { 'http.request_rate': 5 },
+          summaries: { 'http.response_time': { p50: 100, p95: 200, p99: 300 } }
+        }
+      });
+      vi.mocked(fs.readFile).mockResolvedValue(mockResults);
+      
       mockChild.on.mockImplementation((event, callback) => {
         if (event === 'close') {
           setTimeout(() => callback(0), 0);
@@ -208,6 +218,8 @@ describe('ArtilleryWrapper', () => {
       });
 
       expect(result.exitCode).toBe(0);
+      expect(result.summary).toBeDefined();
+      expect(result.summary?.requestsTotal).toBe(300);
     });
   });
 
