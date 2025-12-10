@@ -5,18 +5,29 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import debug from 'debug';
 import { promises as fs } from 'fs';
 import { ArtilleryWrapper } from './lib/artillery.js';
+import { ConfigStorage } from './lib/config-storage.js';
 import {
   RunTestFromFileTool,
   RunTestInlineTool,
   QuickTestTool,
+  RunSavedConfigTool,
   ListCapabilitiesTool,
-  ParseResultsTool
+  ParseResultsTool,
+  SaveConfigTool,
+  ListConfigsTool,
+  GetConfigTool,
+  DeleteConfigTool,
+  WizardStartTool,
+  WizardStepTool,
+  WizardFinalizeTool,
+  RunPresetTestTool,
+  CompareResultsTool
 } from './tools/index.js';
-import { ServerConfig, MCPTool } from './types.js';
+import { ServerConfig } from './types.js';
 import { z } from 'zod';
 
 
-const SERVER_VERSION = '1.0.3';
+const SERVER_VERSION = '1.0.4';
 
 const serverDebug = debug('artillery:mcp:server');
 const errorsDebug = debug('artillery:mcp:errors');
@@ -37,8 +48,13 @@ async function main() {
     // Create Artillery wrapper
     const artillery = new ArtilleryWrapper(config);
 
+    // Create and initialize config storage
+    const configStorage = new ConfigStorage(config.workDir);
+    await configStorage.initialize();
+    serverDebug('Config storage initialized at:', config.workDir + '/saved-configs');
+
     // Register tools
-    registerTools(mcpServer, artillery, config);
+    registerTools(mcpServer, artillery, configStorage, config);
 
     // Connect to transport
     const transport = new StdioServerTransport();
@@ -116,7 +132,12 @@ async function loadConfiguration(): Promise<ServerConfig> {
   return config;
 }
 
-function registerTools(mcpServer: McpServer, artillery: ArtilleryWrapper, config: ServerConfig) {
+function registerTools(
+  mcpServer: McpServer, 
+  artillery: ArtilleryWrapper, 
+  configStorage: ConfigStorage,
+  config: ServerConfig
+) {
   // Register run_test_from_file tool
   mcpServer.registerTool('run_test_from_file', {
     description: 'Run an Artillery test from a config file path.',
@@ -316,7 +337,419 @@ function registerTools(mcpServer: McpServer, artillery: ArtilleryWrapper, config
     }
   });
 
-  serverDebug('All tools registered successfully');
+  // ==========================================================================
+  // Saved Config Tools
+  // ==========================================================================
+
+  // Register save_config tool
+  mcpServer.registerTool('save_config', {
+    description: 'Save a new Artillery configuration or update an existing one.',
+    inputSchema: {
+      name: z.string().describe('Unique name for the config'),
+      content: z.string().describe('Artillery configuration as YAML or JSON string'),
+      description: z.string().optional().describe('Optional description'),
+      tags: z.array(z.string()).optional().describe('Optional tags for organization')
+    }
+  }, async (args) => {
+    try {
+      const tool = new SaveConfigTool(configStorage);
+      const result = await tool.call({ params: { arguments: args } });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              tool: 'save_config',
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: error instanceof Error ? error.message : 'Unknown error occurred'
+              }
+            })
+          }
+        ]
+      };
+    }
+  });
+
+  // Register list_configs tool
+  mcpServer.registerTool('list_configs', {
+    description: 'List all saved Artillery configurations.',
+    inputSchema: {
+      tag: z.string().optional().describe('Optional tag to filter configs by')
+    }
+  }, async (args) => {
+    try {
+      const tool = new ListConfigsTool(configStorage);
+      const result = await tool.call({ params: { arguments: args } });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              tool: 'list_configs',
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: error instanceof Error ? error.message : 'Unknown error occurred'
+              }
+            })
+          }
+        ]
+      };
+    }
+  });
+
+  // Register get_config tool
+  mcpServer.registerTool('get_config', {
+    description: 'Retrieve a saved Artillery configuration by name.',
+    inputSchema: {
+      name: z.string().describe('Name of the config to retrieve')
+    }
+  }, async (args) => {
+    try {
+      const tool = new GetConfigTool(configStorage);
+      const result = await tool.call({ params: { arguments: args } });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              tool: 'get_config',
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: error instanceof Error ? error.message : 'Unknown error occurred'
+              }
+            })
+          }
+        ]
+      };
+    }
+  });
+
+  // Register delete_config tool
+  mcpServer.registerTool('delete_config', {
+    description: 'Delete a saved Artillery configuration.',
+    inputSchema: {
+      name: z.string().describe('Name of the config to delete')
+    }
+  }, async (args) => {
+    try {
+      const tool = new DeleteConfigTool(configStorage);
+      const result = await tool.call({ params: { arguments: args } });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              tool: 'delete_config',
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: error instanceof Error ? error.message : 'Unknown error occurred'
+              }
+            })
+          }
+        ]
+      };
+    }
+  });
+
+  // Register run_saved_config tool
+  mcpServer.registerTool('run_saved_config', {
+    description: 'Run an Artillery test using a previously saved configuration.',
+    inputSchema: {
+      name: z.string().describe('Name of the saved config to run'),
+      outputJson: z.string().optional().describe('Path for JSON results output'),
+      reportHtml: z.string().optional().describe('Path for HTML report output'),
+      env: z.record(z.string()).optional().describe('Environment variables'),
+      validateOnly: z.boolean().optional().describe('Only validate config, do not run')
+    }
+  }, async (args) => {
+    try {
+      const tool = new RunSavedConfigTool(artillery, configStorage);
+      const result = await tool.call({ params: { arguments: args } });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              tool: 'run_saved_config',
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: error instanceof Error ? error.message : 'Unknown error occurred'
+              }
+            })
+          }
+        ]
+      };
+    }
+  });
+
+  // ==========================================================================
+  // Wizard Tools
+  // ==========================================================================
+
+  // Register wizard_start tool
+  mcpServer.registerTool('wizard_start', {
+    description: 'Start a new interactive wizard for building Artillery test configurations.',
+    inputSchema: {
+      fromSavedConfig: z.string().optional().describe('Optional saved config name to use as starting point')
+    }
+  }, async (args) => {
+    try {
+      const tool = new WizardStartTool(configStorage);
+      const result = await tool.call({ params: { arguments: args } });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              tool: 'wizard_start',
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: error instanceof Error ? error.message : 'Unknown error occurred'
+              }
+            })
+          }
+        ]
+      };
+    }
+  });
+
+  // Register wizard_step tool
+  mcpServer.registerTool('wizard_step', {
+    description: 'Advance the wizard to the next step based on user input.',
+    inputSchema: {
+      state: z.object({}).passthrough().describe('The current wizard state'),
+      action: z.string().describe('The action to perform'),
+      value: z.union([
+        z.string(),
+        z.boolean(),
+        z.number(),
+        z.object({}).passthrough()
+      ]).describe('The value for the action')
+    }
+  }, async (args) => {
+    try {
+      const tool = new WizardStepTool();
+      const result = await tool.call({ params: { arguments: args } });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              tool: 'wizard_step',
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: error instanceof Error ? error.message : 'Unknown error occurred'
+              }
+            })
+          }
+        ]
+      };
+    }
+  });
+
+  // Register wizard_finalize tool
+  mcpServer.registerTool('wizard_finalize', {
+    description: 'Generate final Artillery config from completed wizard state. Optionally save and/or run it.',
+    inputSchema: {
+      state: z.object({}).passthrough().describe('The completed wizard state'),
+      runImmediately: z.boolean().optional().describe('If true, run the test immediately'),
+      outputJson: z.string().optional().describe('Path for JSON results output'),
+      reportHtml: z.string().optional().describe('Path for HTML report output')
+    }
+  }, async (args) => {
+    try {
+      const tool = new WizardFinalizeTool(artillery, configStorage);
+      const result = await tool.call({ params: { arguments: args } });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              tool: 'wizard_finalize',
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: error instanceof Error ? error.message : 'Unknown error occurred'
+              }
+            })
+          }
+        ]
+      };
+    }
+  });
+
+  // ==========================================================================
+  // Advanced Testing Tools
+  // ==========================================================================
+
+  // Register run_preset_test tool
+  mcpServer.registerTool('run_preset_test', {
+    description: 'Run a preset test type (smoke, baseline, soak, spike) with minimal configuration.',
+    inputSchema: {
+      target: z.string().describe('Target URL to test'),
+      preset: z.enum(['smoke', 'baseline', 'soak', 'spike']).describe('Test type preset'),
+      path: z.string().optional().describe('Endpoint path (default: /)'),
+      method: z.enum(['GET', 'POST', 'PUT', 'DELETE']).optional().describe('HTTP method'),
+      body: z.record(z.unknown()).optional().describe('Request body for POST/PUT'),
+      outputJson: z.string().optional().describe('Path for JSON results'),
+      reportHtml: z.string().optional().describe('Path for HTML report'),
+      env: z.record(z.string()).optional().describe('Environment variables')
+    }
+  }, async (args) => {
+    try {
+      const tool = new RunPresetTestTool(artillery);
+      const result = await tool.call({ params: { arguments: args } });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              tool: 'run_preset_test',
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: error instanceof Error ? error.message : 'Unknown error occurred'
+              }
+            })
+          }
+        ]
+      };
+    }
+  });
+
+  // Register compare_results tool
+  mcpServer.registerTool('compare_results', {
+    description: 'Compare two Artillery test results to detect performance regressions.',
+    inputSchema: {
+      baselinePath: z.string().describe('Path to baseline JSON results'),
+      currentPath: z.string().describe('Path to current JSON results'),
+      thresholds: z.object({
+        maxLatencyIncrease: z.number().optional().describe('Max latency increase (default: 0.2 = 20%)'),
+        maxErrorRateIncrease: z.number().optional().describe('Max error rate increase (default: 0.01 = 1%)'),
+        minThroughputRatio: z.number().optional().describe('Min throughput ratio (default: 0.9 = 90%)')
+      }).optional().describe('Custom thresholds')
+    }
+  }, async (args) => {
+    try {
+      const tool = new CompareResultsTool(artillery);
+      const result = await tool.call({ params: { arguments: args } });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              tool: 'compare_results',
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: error instanceof Error ? error.message : 'Unknown error occurred'
+              }
+            })
+          }
+        ]
+      };
+    }
+  });
+
+  serverDebug('All tools registered successfully (15 tools)');
 }
 
 // Start the server
