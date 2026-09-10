@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.1] - 2026-09-10
+
+### Security
+
+- Updated `@modelcontextprotocol/sdk` from 1.17 to 1.30, which resolves the
+  advisory for cross-client data leaks via shared transport instances
+  (GHSA-345p-7cg4-v4c7) and the advisories in its `body-parser`, `qs` and
+  `path-to-regexp` dependencies.
+- Updated dev dependencies (vitest 5, esbuild, rollup, postcss, nanoid,
+  brace-expansion) so `npm audit` reports no vulnerabilities.
+
+### Changed
+
+- Tool registration goes through a plain call signature because the SDK's
+  zod v3/v4 compatibility types are too expensive for the compiler to check
+  against a non-literal schema shape.
+- Vitest only discovers tests under `src/`, so compiled copies in `dist/`
+  no longer run twice.
+- `@types/node` moved to 22 to match the Node.js requirement.
+
 ## [3.0.0] - 2026-09-10
 
 ### Breaking
