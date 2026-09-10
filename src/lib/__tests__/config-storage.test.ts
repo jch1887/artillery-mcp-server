@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ConfigStorage, SavedConfigEntry } from '../config-storage.js';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -19,7 +19,6 @@ describe('ConfigStorage', () => {
   let storage: ConfigStorage;
   const workDir = '/tmp/artillery-tests';
   const storageDir = path.join(workDir, 'saved-configs');
-  const indexPath = path.join(storageDir, 'index.json');
 
   beforeEach(() => {
     storage = new ConfigStorage(workDir);

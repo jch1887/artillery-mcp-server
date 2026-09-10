@@ -11,6 +11,8 @@
 // ============================================================================
 
 /** Available test type presets */
+import { SERVER_VERSION } from '../version.js';
+
 export type TestType = 'smoke' | 'baseline' | 'soak' | 'spike' | 'custom';
 
 /** Wizard step names */
@@ -507,7 +509,7 @@ function generateYaml(
 
   lines.push('  defaults:');
   lines.push('    headers:');
-  lines.push("      User-Agent: 'Artillery-MCP-Server/1.0.4'");
+  lines.push(`      User-Agent: 'Artillery-MCP-Server/${SERVER_VERSION}'`);
   lines.push('');
   lines.push('scenarios:');
   lines.push(`  - name: '${scenarioName}'`);

@@ -177,14 +177,14 @@ describe('Advanced Testing Tools', () => {
       
       const baselineResults = {
         aggregate: {
-          counters: { 'http.requests': 100, 'http.errors': 1 },
+          counters: { 'http.requests': 100, 'errors.ETIMEDOUT': 1 },
           rates: { 'http.request_rate': 10 },
           summaries: { 'http.response_time': { p50: 100, p95: 200, p99: 300 } }
         }
       };
       const currentResults = {
         aggregate: {
-          counters: { 'http.requests': 100, 'http.errors': 1 },
+          counters: { 'http.requests': 100, 'errors.ETIMEDOUT': 1 },
           rates: { 'http.request_rate': 10 },
           summaries: { 'http.response_time': { p50: 105, p95: 210, p99: 310 } }
         }
@@ -213,14 +213,14 @@ describe('Advanced Testing Tools', () => {
       
       const baselineResults = {
         aggregate: {
-          counters: { 'http.requests': 100, 'http.errors': 0 },
+          counters: { 'http.requests': 100, 'errors.ETIMEDOUT': 0 },
           rates: { 'http.request_rate': 10 },
           summaries: { 'http.response_time': { p50: 100, p95: 200, p99: 300 } }
         }
       };
       const currentResults = {
         aggregate: {
-          counters: { 'http.requests': 100, 'http.errors': 0 },
+          counters: { 'http.requests': 100, 'errors.ETIMEDOUT': 0 },
           rates: { 'http.request_rate': 10 },
           summaries: { 'http.response_time': { p50: 150, p95: 300, p99: 450 } }
         }
@@ -242,7 +242,8 @@ describe('Advanced Testing Tools', () => {
       expect(result.status).toBe('ok');
       expect(result.data?.passed).toBe(false);
       expect(result.data?.failures.length).toBeGreaterThan(0);
-      expect(result.data?.failures[0]).toContain('latency');
+      expect(result.data?.failures.every(f => f.includes('latency'))).toBe(true);
+      expect(result.data?.failures).toHaveLength(3);
     });
 
     it('should fail when throughput drops', async () => {
@@ -250,14 +251,14 @@ describe('Advanced Testing Tools', () => {
       
       const baselineResults = {
         aggregate: {
-          counters: { 'http.requests': 100, 'http.errors': 0 },
+          counters: { 'http.requests': 100, 'errors.ETIMEDOUT': 0 },
           rates: { 'http.request_rate': 10 },
           summaries: { 'http.response_time': { p50: 100, p95: 200, p99: 300 } }
         }
       };
       const currentResults = {
         aggregate: {
-          counters: { 'http.requests': 50, 'http.errors': 0 },
+          counters: { 'http.requests': 50, 'errors.ETIMEDOUT': 0 },
           rates: { 'http.request_rate': 5 }, // 50% drop
           summaries: { 'http.response_time': { p50: 100, p95: 200, p99: 300 } }
         }
@@ -286,14 +287,14 @@ describe('Advanced Testing Tools', () => {
       
       const baselineResults = {
         aggregate: {
-          counters: { 'http.requests': 100, 'http.errors': 5 },
+          counters: { 'http.requests': 100, 'errors.ETIMEDOUT': 5 },
           rates: { 'http.request_rate': 10 },
           summaries: { 'http.response_time': { p50: 200, p95: 400, p99: 600 } }
         }
       };
       const currentResults = {
         aggregate: {
-          counters: { 'http.requests': 100, 'http.errors': 1 },
+          counters: { 'http.requests': 100, 'errors.ETIMEDOUT': 1 },
           rates: { 'http.request_rate': 12 },
           summaries: { 'http.response_time': { p50: 100, p95: 200, p99: 300 } }
         }
@@ -323,14 +324,14 @@ describe('Advanced Testing Tools', () => {
       
       const baselineResults = {
         aggregate: {
-          counters: { 'http.requests': 100, 'http.errors': 0 },
+          counters: { 'http.requests': 100, 'errors.ETIMEDOUT': 0 },
           rates: { 'http.request_rate': 10 },
           summaries: { 'http.response_time': { p50: 100, p95: 200, p99: 300 } }
         }
       };
       const currentResults = {
         aggregate: {
-          counters: { 'http.requests': 100, 'http.errors': 0 },
+          counters: { 'http.requests': 100, 'errors.ETIMEDOUT': 0 },
           rates: { 'http.request_rate': 10 },
           summaries: { 'http.response_time': { p50: 120, p95: 250, p99: 380 } }
         }

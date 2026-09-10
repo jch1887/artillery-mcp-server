@@ -17,20 +17,23 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Install Artillery for the smoke test
+        run: npm install -g artillery
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
 
       - name: Build project
         run: npm run build
 
-      - name: Lint
-        run: npm run lint --if-present
-
-      - name: Run tests
-        run: npm test --if-present
-
       - name: Run tests with coverage
-        run: npm run test:coverage --if-present
+        run: npm run test:coverage

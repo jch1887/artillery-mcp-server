@@ -1,6 +1,6 @@
 {
   "name": "@jch1887/artillery-mcp-server",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "MCP server for Artillery load testing",
   "main": "dist/server.js",
   "bin": {
@@ -10,12 +10,15 @@
   "files": [
     "dist/**/*",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -29,11 +32,14 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/debug": "^4.1.12",
     "@types/node": "^20.0.0",
     "@vitest/coverage-v8": "^1.0.0",
+    "eslint": "^9.39.5",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0",
+    "typescript-eslint": "^8.70.0",
     "vitest": "^1.0.0"
   },
   "keywords": [
@@ -49,7 +55,7 @@
   "author": "jch1887",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.18.0"
   },
   "repository": {
     "type": "git",

@@ -15,7 +15,7 @@ export class ListCapabilitiesTool implements MCPTool {
     private serverVersion: string
   ) {}
 
-  async call(request: any): Promise<ToolOutput<ServerCapabilities>> {
+  async call(_request: unknown): Promise<ToolOutput<ServerCapabilities>> {
     try {
       // Get Artillery version
       const artilleryVersion = await this.artillery.getVersion();

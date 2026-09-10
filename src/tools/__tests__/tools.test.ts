@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { RunTestFromFileTool, RunTestInlineTool, QuickTestTool, ListCapabilitiesTool, ParseResultsTool } from '../index.js';
-import { ArtilleryWrapper } from '../../lib/artillery.js';
+import { RunTestFromFileTool, RunTestInlineTool, QuickTestTool, ListCapabilitiesTool, ParseResultsTool, ListResultsTool } from '../index.js';
 
 // Mock ArtilleryWrapper
 vi.mock('../../lib/artillery.js', () => ({
@@ -17,7 +16,8 @@ describe('MCP Tools', () => {
       runTestInline: vi.fn(),
       quickTest: vi.fn(),
       getVersion: vi.fn(),
-      parseResults: vi.fn()
+      parseResults: vi.fn(),
+      listResults: vi.fn()
     };
 
     mockConfig = {
@@ -55,7 +55,7 @@ describe('MCP Tools', () => {
       
       expect(result.status).toBe('ok');
       expect(result.data?.exitCode).toBe(0);
-      expect(result.data?.logsTail).toContain('Configuration validated successfully');
+      expect(result.data?.logsTail).toContain('nothing was executed');
     });
 
     it('should run test and return result', async () => {
@@ -133,7 +133,7 @@ describe('MCP Tools', () => {
       const result = await tool.call(request as any);
       
       expect(result.status).toBe('ok');
-      expect(result.data?.logsTail).toContain('Inline configuration validated successfully');
+      expect(result.data?.logsTail).toContain('nothing was executed');
     });
 
     it('should run inline test and return result', async () => {
@@ -167,7 +167,7 @@ describe('MCP Tools', () => {
       const tool = new QuickTestTool(mockArtillery);
       
       expect(tool.name).toBe('quick_test');
-      expect(tool.description).toBe('Run a quick HTTP test (if supported by Artillery).');
+      expect(tool.description).toContain('quick HTTP load test');
       expect(tool.inputSchema).toBeDefined();
     });
 
@@ -203,7 +203,10 @@ describe('MCP Tools', () => {
         count: undefined,
         method: undefined,
         headers: undefined,
-        body: undefined
+        body: undefined,
+        insecure: undefined,
+        keepResults: undefined,
+        outputJson: undefined
       });
     });
   });
@@ -252,20 +255,20 @@ describe('MCP Tools', () => {
       const mockResults = {
         aggregate: {
           counters: {
-            'http.requests': 100
+            'http.requests': 100,
+            'http.codes.200': 98,
+            'errors.ETIMEDOUT': 2,
+            'vusers.created_by_name.Test Scenario': 10
           },
           rates: {
             'http.request_rate': 10.5
           },
           summaries: {
             'http.response_time': { p50: 150, p95: 300, p99: 500 }
-          }
-        },
-        scenarios: [
-          { name: 'Test Scenario', count: 10, successRate: 95, avgLatency: 200 }
-        ],
-        timestamp: '2025-01-21T10:00:00.000Z',
-        duration: '20s'
+          },
+          firstCounterAt: 1700000000000,
+          lastCounterAt: 1700000020000
+        }
       };
 
       mockArtillery.parseResults.mockResolvedValue(mockResults);
@@ -283,24 +286,35 @@ describe('MCP Tools', () => {
       expect(result.status).toBe('ok');
       expect(result.data?.summary.requestsTotal).toBe(100);
       expect(result.data?.summary.rpsAvg).toBe(10.5);
-      expect(result.data?.scenarios).toHaveLength(1);
+      expect(result.data?.summary.errors).toEqual({ ETIMEDOUT: 2 });
+      expect(result.data?.summary.httpCodes['200']).toBe(98);
+      expect(result.data?.scenarios).toEqual([{ name: 'Test Scenario', count: 10 }]);
+      expect(result.data?.metadata.durationMs).toBe(20000);
     });
 
-    it('should reject relative paths', async () => {
+    it('should surface wrapper errors as PARSE_ERROR', async () => {
       const tool = new ParseResultsTool(mockArtillery);
+      mockArtillery.parseResults.mockRejectedValue(new Error('Path x is outside the working directory'));
 
-      const request = {
-        params: {
-          arguments: {
-            jsonPath: 'relative/path.json'
-          }
-        }
-      };
+      const result = await tool.call({ params: { arguments: { jsonPath: '../x.json' } } } as any);
 
-      const result = await tool.call(request as any);
-      
       expect(result.status).toBe('error');
-      expect(result.error?.message).toBe('Path must be absolute');
+      expect(result.error?.code).toBe('PARSE_ERROR');
+      expect(result.error?.message).toContain('outside the working directory');
+    });
+  });
+
+  describe('ListResultsTool', () => {
+    it('should return the files from the wrapper', async () => {
+      const tool = new ListResultsTool(mockArtillery);
+      const files = [{ path: '/work/results/a.json', sizeBytes: 10, modifiedAt: '2025-01-01T00:00:00.000Z' }];
+      mockArtillery.listResults.mockResolvedValue(files);
+
+      const result = await tool.call({ params: { arguments: { limit: 5 } } } as any);
+
+      expect(result.status).toBe('ok');
+      expect(result.data).toEqual({ count: 1, results: files });
+      expect(mockArtillery.listResults).toHaveBeenCalledWith(5);
     });
   });
 });
