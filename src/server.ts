@@ -4,7 +4,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import debug from 'debug';
 import { promises as fs } from 'fs';
-import { z, ZodRawShape } from 'zod';
+import { z } from 'zod';
+import type { RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ArtilleryWrapper } from './lib/artillery.js';
 import { ConfigStorage } from './lib/config-storage.js';
 import {
@@ -107,12 +109,17 @@ async function callTool(tool: MCPTool, args: unknown) {
   };
 }
 
-function register(server: McpServer, tool: MCPTool, inputSchema: ZodRawShape) {
-  server.registerTool(
-    tool.name,
-    { description: tool.description, inputSchema },
-    async (args) => callTool(tool, args)
-  );
+/* The SDK's zod v3/v4 compatibility types are too expensive for the compiler to
+   check against a non-literal shape, so registration goes through a plain signature. */
+type RegisterTool = (
+  name: string,
+  config: { description: string; inputSchema: z.ZodRawShape },
+  cb: (args: unknown) => Promise<CallToolResult>
+) => RegisteredTool;
+
+function register(server: McpServer, tool: MCPTool, inputSchema: z.ZodRawShape) {
+  const registerTool = server.registerTool as unknown as RegisterTool;
+  registerTool.call(server, tool.name, { description: tool.description, inputSchema }, (args) => callTool(tool, args));
 }
 
 function registerTools(
