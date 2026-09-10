@@ -88,7 +88,7 @@ export class RunSavedConfigTool implements MCPTool {
           data: {
             exitCode: 0,
             elapsedMs: 0,
-            logsTail: `Saved config '${args.name}' validated successfully (dry-run)`,
+            logsTail: `Dry run requested for '${args.name}': nothing was executed. Artillery has no validation mode, so the config has not been checked.`,
             summary: undefined
           }
         };

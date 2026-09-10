@@ -20,11 +20,8 @@ export class RunTestInlineTool implements MCPTool {
   constructor(private artillery: ArtilleryWrapper) {}
 
   async call(request: any): Promise<ToolOutput<ArtilleryResult>> {
+    const args = request.params?.arguments || request.params || {};
     try {
-      // Extract arguments from MCP request
-      const args = request.params?.arguments || request.params || {};
-      
-      // Validate input
       const input: RunTestInlineInput = {
         configText: args.configText,
         outputJson: args.outputJson,
@@ -33,22 +30,15 @@ export class RunTestInlineTool implements MCPTool {
         cwd: args.cwd,
         validateOnly: args.validateOnly || false
       };
-      
-      // Handle dry-run validation
+
       if (input.validateOnly) {
         return {
           status: 'ok',
           tool: this.name,
-          data: {
-            exitCode: 0,
-            elapsedMs: 0,
-            logsTail: 'Inline configuration validated successfully (dry-run)',
-            summary: undefined
-          }
+          data: { exitCode: 0, elapsedMs: 0, logsTail: 'Dry run requested: nothing was executed. Artillery has no validation mode, so the config has not been checked.', summary: undefined }
         };
       }
 
-      // Run the test
       const result = await this.artillery.runTestInline(input.configText, {
         outputJson: input.outputJson,
         reportHtml: input.reportHtml,
@@ -56,12 +46,7 @@ export class RunTestInlineTool implements MCPTool {
         cwd: input.cwd
       });
 
-      return {
-        status: 'ok',
-        tool: this.name,
-        data: result
-      };
-
+      return { status: 'ok', tool: this.name, data: result };
     } catch (error) {
       return {
         status: 'error',
@@ -69,10 +54,7 @@ export class RunTestInlineTool implements MCPTool {
         error: {
           code: 'EXECUTION_ERROR',
           message: error instanceof Error ? error.message : 'Unknown error occurred',
-          details: {
-            tool: this.name,
-            arguments: request.params?.arguments || request.params
-          }
+          details: { tool: this.name, arguments: args }
         }
       };
     }

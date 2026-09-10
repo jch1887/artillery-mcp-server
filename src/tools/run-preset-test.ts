@@ -153,7 +153,7 @@ export class RunPresetTestTool implements MCPTool {
       state = advanceWizard(state, { action: 'confirm', value: true });
 
       // Generate config
-      const { configYaml, summary } = generateConfig(state);
+      const { configYaml } = generateConfig(state);
 
       // Run the test
       const result = await this.artillery.runTestInline(configYaml, {

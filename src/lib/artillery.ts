@@ -1,374 +1,396 @@
-import { spawn, SpawnOptions } from 'child_process';
+import { spawn, ChildProcess, SpawnOptions } from 'child_process';
+import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { ServerConfig, ArtilleryResult, ArtillerySummary } from '../types.js';
+import {
+  ServerConfig,
+  ArtilleryResult,
+  ArtillerySummary,
+  QuickTestInput,
+  QuickTestResult,
+  ResultFileInfo,
+  RunOptions
+} from '../types.js';
+import { resolveExistingInside, resolveOutputInside } from './paths.js';
+import { summariseResults } from './results.js';
 
-export class ArtilleryWrapper {
-  private config: ServerConfig;
+const PASSTHROUGH_ENV = new Set([
+  'PATH', 'HOME', 'USERPROFILE', 'TMPDIR', 'TEMP', 'TMP',
+  'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'LANG', 'LC_ALL',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+  'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE'
+]);
 
-  constructor(config: ServerConfig) {
-    this.config = config;
+const BLOCKED_ENV = new Set([
+  'PATH', 'NODE_OPTIONS', 'NODE_PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH',
+  'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'HOME', 'USERPROFILE',
+  'COMSPEC', 'PATHEXT', 'SYSTEMROOT', 'NODE_EXTRA_CA_CERTS'
+]);
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const LOG_TAIL_BYTES = 2048;
+const REPORT_TIMEOUT_MS = 60_000;
+const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
+const RESULTS_DIR = 'results';
+const SKIP_DIRS = new Set(['node_modules', 'saved-configs', 'temp', '.git']);
+
+interface CommandResult {
+  exitCode: number;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}
+
+interface OutputPaths {
+  json?: string;
+  html?: string;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Build the child environment: a fixed allowlist from the server plus caller-supplied extras. */
+export function buildEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of Object.keys(process.env)) {
+    if (PASSTHROUGH_ENV.has(key) || key.startsWith('ARTILLERY_')) env[key] = process.env[key];
+  }
+  for (const [key, value] of Object.entries(extra ?? {})) {
+    if (!ENV_NAME.test(key)) throw new Error(`Invalid environment variable name: ${key}`);
+    if (BLOCKED_ENV.has(key.toUpperCase())) throw new Error(`Environment variable ${key} cannot be overridden`);
+    if (typeof value !== 'string') throw new Error(`Environment variable ${key} must be a string`);
+    env[key] = value;
+  }
+  return env;
+}
+
+export function parseDuration(duration: string): number {
+  const match = /^(\d+)\s*([smh])?$/.exec(duration.trim());
+  if (!match) throw new Error(`Invalid duration "${duration}". Use a number with an optional s, m or h suffix, e.g. "30s".`);
+  const value = parseInt(match[1], 10);
+  const multiplier = { s: 1, m: 60, h: 3600 }[match[2] ?? 's'] ?? 1;
+  const seconds = value * multiplier;
+  if (seconds < 1) throw new Error('Duration must be at least one second');
+  return seconds;
+}
+
+function tryParseJsonObject(text: string): unknown {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed !== null && typeof parsed === 'object' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Turn quick_test inputs into a complete Artillery script. Every virtual user sends exactly one request. */
+export function buildQuickTestConfig(input: QuickTestInput): Record<string, unknown> {
+  let url: URL;
+  try {
+    url = new URL(input.target);
+  } catch {
+    throw new Error(`Invalid target URL: ${input.target}`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('Target must be an http or https URL');
   }
 
-  /**
-   * Detect Artillery binary from PATH or environment
-   */
+  const method = (input.method ?? 'GET').toLowerCase();
+  if (!HTTP_METHODS.includes(method)) {
+    throw new Error(`Unsupported HTTP method: ${input.method}`);
+  }
+
+  const durationSeconds = input.duration ? parseDuration(input.duration) : undefined;
+  const phase: Record<string, number> = input.count
+    ? { duration: durationSeconds ?? Math.max(1, Math.ceil(input.count / (input.rate ?? 10))), arrivalCount: input.count }
+    : { duration: durationSeconds ?? 10, arrivalRate: input.rate ?? 10 };
+
+  const request: Record<string, unknown> = { url: `${url.pathname}${url.search}` };
+  if (input.headers && Object.keys(input.headers).length > 0) request.headers = input.headers;
+  if (input.body !== undefined) {
+    const json = tryParseJsonObject(input.body);
+    if (json !== undefined) request.json = json;
+    else request.body = input.body;
+  }
+
+  const config: Record<string, unknown> = { target: url.origin, phases: [phase] };
+  if (input.insecure) config.tls = { rejectUnauthorized: false };
+
+  return {
+    config,
+    scenarios: [{ name: 'quick_test', flow: [{ [method]: request }] }]
+  };
+}
+
+async function isExecutable(candidate: string): Promise<boolean> {
+  try {
+    await fs.access(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Locate a command on PATH without shelling out, honouring PATHEXT on Windows. */
+export async function findOnPath(name: string): Promise<string | undefined> {
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  const exts = process.platform === 'win32'
+    ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').map(ext => ext.toLowerCase())
+    : [''];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, name + ext);
+      if (await isExecutable(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+function killTree(child: ChildProcess): void {
+  if (!child.pid) return;
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    } else {
+      process.kill(-child.pid, 'SIGKILL');
+    }
+  } catch {
+    child.kill('SIGKILL');
+  }
+}
+
+function tail(stdout: string, stderr: string): string {
+  const parts = [stdout.slice(-LOG_TAIL_BYTES)];
+  if (stderr.trim()) parts.push(`[stderr]\n${stderr.slice(-LOG_TAIL_BYTES)}`);
+  return parts.join('\n');
+}
+
+export class ArtilleryWrapper {
+  constructor(private readonly config: ServerConfig) {}
+
   static async detectBinary(): Promise<string> {
     const envBin = process.env.ARTILLERY_BIN;
     if (envBin) {
-      try {
-        await fs.access(envBin);
-        return envBin;
-      } catch {
+      if (!(await isExecutable(envBin))) {
         throw new Error(`ARTILLERY_BIN specified but not accessible: ${envBin}`);
       }
+      return envBin;
     }
-
-    // Try common binary names
-    const binaryNames = ['artillery', 'artillery.exe'];
-    for (const name of binaryNames) {
-      try {
-        const { execSync } = await import('child_process');
-        execSync(`which ${name}`, { stdio: 'ignore' });
-        return name;
-      } catch {
-        // Continue to next binary name
-      }
-    }
-
-    throw new Error('Artillery binary not found in PATH. Please install Artillery or set ARTILLERY_BIN environment variable.');
+    const found = await findOnPath('artillery');
+    if (found) return found;
+    throw new Error('Artillery binary not found in PATH. Install Artillery or set ARTILLERY_BIN.');
   }
 
-  /**
-   * Get Artillery version
-   */
   async getVersion(): Promise<string> {
-    try {
-      const result = await this.runCommand(['--version'], { timeout: 10000 });
-      return result.stdout.trim();
-    } catch (error) {
-      throw new Error(`Failed to get Artillery version: ${error}`);
+    const result = await this.runCommand(['--version'], { timeout: 10_000 });
+    if (result.exitCode !== 0) {
+      throw new Error(`Failed to get Artillery version: ${result.stderr || result.stdout}`);
     }
+    return result.stdout.trim();
   }
 
-  /**
-   * Run Artillery test from file
-   */
-  async runTestFromFile(
-    filePath: string,
-    options: {
-      outputJson?: string;
-      reportHtml?: string;
-      env?: Record<string, string>;
-      cwd?: string;
-      validateOnly?: boolean;
-    } = {}
-  ): Promise<ArtilleryResult> {
-    const startTime = Date.now();
-    
-    // Validate and sanitize file path
-    const resolvedPath = await this.sanitizePath(filePath, options.cwd);
-    
-    // Build command arguments
+  async runTestFromFile(filePath: string, options: RunOptions = {}): Promise<ArtilleryResult> {
+    const cwd = options.cwd
+      ? await resolveExistingInside(this.config.workDir, options.cwd)
+      : this.config.workDir;
+    const scriptPath = await resolveExistingInside(this.config.workDir, filePath, cwd);
+    const outputs = await this.resolveOutputs(options, cwd);
+
     const args = ['run'];
-    
-    if (options.validateOnly) {
-      args.push('--dry-run');
-    }
-    
-    if (options.outputJson) {
-      args.push('--output', options.outputJson);
-    }
-    
-    if (options.reportHtml) {
-      args.push('--report', options.reportHtml);
-    }
-    
-    args.push(resolvedPath);
+    if (outputs.json) args.push('--output', outputs.json);
+    args.push(scriptPath);
 
-    // Run the command
-    const result = await this.runCommand(args, {
-      cwd: options.cwd || this.config.workDir,
-      env: { ...process.env, ...options.env },
-      timeout: this.config.timeoutMs
-    });
-
-    const elapsedMs = Date.now() - startTime;
-
-    // Parse summary if JSON output was generated
-    let summary: ArtillerySummary | undefined;
-    if (options.outputJson && result.exitCode === 0) {
-      try {
-        summary = await this.parseSummary(options.outputJson);
-      } catch (error) {
-        // Log but don't fail the operation
-        console.warn('Failed to parse summary:', error);
-      }
-    }
-
-    return {
-      exitCode: result.exitCode,
-      elapsedMs,
-      logsTail: result.stdout.slice(-2048), // Last 2KB
-      jsonResultPath: options.outputJson,
-      htmlReportPath: options.reportHtml,
-      summary
-    };
+    return this.execute(args, { cwd, env: buildEnv(options.env) }, outputs);
   }
 
-  /**
-   * Run Artillery test from inline config
-   */
-  async runTestInline(
-    configText: string,
-    options: {
-      outputJson?: string;
-      reportHtml?: string;
-      env?: Record<string, string>;
-      cwd?: string;
-      validateOnly?: boolean;
-    } = {}
-  ): Promise<ArtilleryResult> {
-    // Create temporary config file
+  async runTestInline(configText: string, options: RunOptions = {}): Promise<ArtilleryResult> {
     const tempDir = path.join(this.config.workDir, 'temp');
     await fs.mkdir(tempDir, { recursive: true });
-    
-    const tempFile = path.join(tempDir, `config-${Date.now()}.yml`);
-    
+    const tempFile = path.join(tempDir, `config-${randomUUID()}.yml`);
+    await fs.writeFile(tempFile, configText, 'utf-8');
     try {
-      await fs.writeFile(tempFile, configText);
       return await this.runTestFromFile(tempFile, options);
     } finally {
-      // Clean up temp file
-      try {
-        await fs.unlink(tempFile);
-      } catch {
-        // Ignore cleanup errors
-      }
+      await fs.rm(tempFile, { force: true });
     }
   }
 
-  /**
-   * Run quick HTTP test
-   */
-  async quickTest(options: {
-    target: string;
-    rate?: number;
-    duration?: string;
-    count?: number;
-    method?: string;
-    headers?: Record<string, string>;
-    body?: string;
-  }): Promise<ArtilleryResult> {
+  async quickTest(input: QuickTestInput): Promise<QuickTestResult> {
     if (!this.config.allowQuick) {
-      throw new Error('Quick tests are disabled. Set ARTILLERY_ALLOW_QUICK=false to disable.');
+      throw new Error('Quick tests are disabled because ARTILLERY_ALLOW_QUICK is set to false');
     }
+    const config = buildQuickTestConfig(input);
+    const outputJson = input.outputJson ?? (await this.defaultResultPath('quick-test'));
+    const result = await this.runTestInline(JSON.stringify(config), { outputJson });
 
-    // Use Artillery 2.0's quick command for simple tests
-    const args = ['quick'];
-    
-    // Add target URL
-    args.push(options.target);
-    
-    // Add count (number of VUs)
-    if (options.count) {
-      args.push('-c', options.count.toString());
-    } else if (options.rate && options.duration) {
-      // Estimate count based on rate and duration
-      const durationSeconds = this.parseDuration(options.duration);
-      const estimatedCount = Math.ceil(options.rate * durationSeconds);
-      args.push('-c', estimatedCount.toString());
-    } else {
-      args.push('-c', '10'); // Default to 10 VUs
+    if (!input.keepResults && !input.outputJson) {
+      await fs.rm(outputJson, { force: true });
+      result.jsonResultPath = undefined;
     }
-    
-    // Add number of requests per VU
-    if (options.rate && options.duration) {
-      const durationSeconds = this.parseDuration(options.duration);
-      const vuCount = options.count || Math.ceil(options.rate * durationSeconds);
-      const requestsPerVU = Math.ceil(options.rate * durationSeconds / vuCount);
-      args.push('-n', requestsPerVU.toString());
-    } else if (options.duration && !options.rate) {
-      // If duration is specified but not rate, calculate requests to spread over duration
-      const durationSeconds = this.parseDuration(options.duration);
-      const requestsPerVU = Math.max(1, Math.ceil(durationSeconds / 2)); // Roughly 1 request every 2 seconds
-      args.push('-n', requestsPerVU.toString());
-    } else {
-      args.push('-n', '30'); // Default to 30 requests per VU
-    }
-    
-    // Add output file
-    const outputFile = path.join(this.config.workDir, `quick-test-${Date.now()}.json`);
-    args.push('-o', outputFile);
-    
-    // Add insecure flag if needed (for self-signed certs)
-    if (options.target.startsWith('https://')) {
-      args.push('-k');
-    }
-    
-    // Run the quick command
-    const startTime = Date.now();
-    const result = await this.runCommand(args, {
-      cwd: this.config.workDir,
-      timeout: this.config.timeoutMs
-    });
-    const elapsedMs = Date.now() - startTime;
-    
-    // Parse summary if JSON output was generated
-    let summary: ArtillerySummary | undefined;
-    if (result.exitCode === 0) {
-      try {
-        summary = await this.parseSummary(outputFile);
-      } catch (error) {
-        // Log but don't fail the operation
-        console.warn('Failed to parse summary:', error);
-      }
-    }
-
-    return {
-      exitCode: result.exitCode,
-      elapsedMs,
-      logsTail: result.stdout.slice(-2048), // Last 2KB
-      jsonResultPath: outputFile,
-      htmlReportPath: undefined,
-      summary
-    };
+    return { ...result, config };
   }
 
-  /**
-   * Parse duration string to seconds
-   */
-  private parseDuration(duration: string): number {
-    const match = duration.match(/^(\d+)([smhd])?$/);
-    if (!match) return 1;
-    
-    const value = parseInt(match[1]);
-    const unit = match[2] || 's';
-    
-    switch (unit) {
-      case 's': return value;
-      case 'm': return value * 60;
-      case 'h': return value * 3600;
-      case 'd': return value * 86400;
-      default: return value;
-    }
-  }
-
-  /**
-   * Parse Artillery JSON results
-   */
-  async parseResults(jsonPath: string): Promise<any> {
+  async parseResults(jsonPath: string): Promise<unknown> {
+    const resolved = await resolveExistingInside(this.config.workDir, jsonPath);
+    let content: string;
     try {
-      const content = await fs.readFile(jsonPath, 'utf-8');
+      content = await fs.readFile(resolved, 'utf-8');
+    } catch (error) {
+      throw new Error(`Failed to read results file: ${errorMessage(error)}`);
+    }
+    try {
       return JSON.parse(content);
     } catch (error) {
-      throw new Error(`Failed to parse results file: ${error}`);
+      throw new Error(`Failed to parse results file: ${errorMessage(error)}`);
     }
   }
 
-  /**
-   * Parse summary from JSON results
-   */
-  private async parseSummary(jsonPath: string): Promise<ArtillerySummary> {
-    const results = await this.parseResults(jsonPath);
-    
-    // Extract metrics from Artillery 2.0 output format
-    const aggregate = results.aggregate || {};
-    const counters = aggregate.counters || {};
-    const rates = aggregate.rates || {};
-    const summaries = aggregate.summaries || {};
-    
+  /** List JSON files under the working directory, newest first. */
+  async listResults(limit = 100): Promise<ResultFileInfo[]> {
+    const files: ResultFileInfo[] = [];
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      let entries;
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (depth < 3 && !SKIP_DIRS.has(entry.name)) await walk(full, depth + 1);
+        } else if (entry.isFile() && entry.name.endsWith('.json')) {
+          const stat = await fs.stat(full);
+          files.push({ path: full, sizeBytes: stat.size, modifiedAt: stat.mtime.toISOString() });
+        }
+      }
+    };
+    await walk(this.config.workDir, 0);
+    return files.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)).slice(0, limit);
+  }
+
+  private async defaultResultPath(prefix: string): Promise<string> {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return resolveOutputInside(this.config.workDir, path.join(RESULTS_DIR, `${prefix}-${stamp}-${randomUUID().slice(0, 8)}.json`));
+  }
+
+  private async resolveOutputs(options: RunOptions, base: string): Promise<OutputPaths> {
+    const outputs: OutputPaths = {};
+    if (options.outputJson) {
+      outputs.json = await resolveOutputInside(this.config.workDir, options.outputJson, base);
+    }
+    if (options.reportHtml) {
+      outputs.html = await resolveOutputInside(this.config.workDir, options.reportHtml, base);
+      outputs.json ??= await this.defaultResultPath('run');
+    }
+    return outputs;
+  }
+
+  private async execute(
+    args: string[],
+    spawnOptions: { cwd: string; env: NodeJS.ProcessEnv },
+    outputs: OutputPaths
+  ): Promise<ArtilleryResult> {
+    const startTime = Date.now();
+    const run = await this.runCommand(args, spawnOptions);
+    const warnings: string[] = [];
+
+    if (run.timedOut) {
+      warnings.push(`Artillery was killed after exceeding the ${this.config.timeoutMs}ms timeout`);
+    } else if (run.signal) {
+      warnings.push(`Artillery was terminated by signal ${run.signal}`);
+    }
+
+    let summary: ArtillerySummary | undefined;
+    if (outputs.json) {
+      try {
+        summary = summariseResults(await this.parseResults(outputs.json));
+      } catch (error) {
+        warnings.push(`No results summary: ${errorMessage(error)}`);
+      }
+    }
+
+    let htmlReportPath: string | undefined;
+    if (outputs.html && outputs.json && summary) {
+      htmlReportPath = await this.generateHtmlReport(outputs.json, outputs.html, warnings);
+    }
+
     return {
-      requestsTotal: counters['http.requests'] || 0,
-      rpsAvg: rates['http.request_rate'] || 0,
-      latencyMs: {
-        p50: summaries['http.response_time']?.p50 || 0,
-        p95: summaries['http.response_time']?.p95 || 0,
-        p99: summaries['http.response_time']?.p99 || 0
-      },
-      errors: counters['http.errors'] || {}
+      exitCode: run.exitCode,
+      elapsedMs: Date.now() - startTime,
+      timedOut: run.timedOut || undefined,
+      logsTail: tail(run.stdout, run.stderr),
+      jsonResultPath: outputs.json,
+      htmlReportPath,
+      summary,
+      warnings: warnings.length > 0 ? warnings : undefined
     };
   }
 
-  /**
-   * Run Artillery command with process management
-   */
-  private async runCommand(
-    args: string[],
-    options: SpawnOptions & { timeout?: number } = {}
-  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-    return new Promise((resolve, reject) => {
-      const { timeout, ...spawnOptions } = options;
-      const timeoutMs = timeout || this.config.timeoutMs;
+  private async generateHtmlReport(jsonPath: string, htmlPath: string, warnings: string[]): Promise<string | undefined> {
+    const report = await this.runCommand(['report', jsonPath, '--output', htmlPath], { timeout: REPORT_TIMEOUT_MS });
+    try {
+      await fs.access(htmlPath);
+      return htmlPath;
+    } catch {
+      warnings.push(
+        'HTML report not generated: this Artillery version no longer supports the report command. ' +
+        `JSON results are at ${jsonPath}.` + (report.stderr.trim() ? ` ${report.stderr.trim()}` : '')
+      );
+      return undefined;
+    }
+  }
 
-      const child = spawn(this.config.artilleryBin, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        ...spawnOptions
-      });
+  private runCommand(
+    args: string[],
+    options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number } = {}
+  ): Promise<CommandResult> {
+    return new Promise((resolve, reject) => {
+      const timeoutMs = options.timeout ?? this.config.timeoutMs;
+      const maxBytes = this.config.maxOutputMb * 1024 * 1024;
+      const spawnOptions: SpawnOptions = {
+        cwd: options.cwd ?? this.config.workDir,
+        env: options.env ?? buildEnv(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
+        windowsHide: true
+      };
+
+      let child: ChildProcess;
+      try {
+        child = spawn(this.config.artilleryBin, args, spawnOptions);
+      } catch (error) {
+        reject(error);
+        return;
+      }
 
       let stdout = '';
       let stderr = '';
-      let killed = false;
+      let timedOut = false;
 
-      // Set up timeout
-      const timeoutId = setTimeout(() => {
-        killed = true;
-        child.kill('SIGKILL');
-        reject(new Error(`Command timed out after ${timeoutMs}ms`));
+      const timer = setTimeout(() => {
+        timedOut = true;
+        killTree(child);
       }, timeoutMs);
 
-      // Capture output with size limits
-      child.stdout?.on('data', (data) => {
-        const chunk = data.toString();
-        if (stdout.length < this.config.maxOutputMb * 1024 * 1024) {
-          stdout += chunk;
-        }
+      child.stdout?.on('data', (data: Buffer) => {
+        if (stdout.length < maxBytes) stdout += data.toString();
       });
-
-      child.stderr?.on('data', (data) => {
-        const chunk = data.toString();
-        if (stderr.length < this.config.maxOutputMb * 1024 * 1024) {
-          stderr += chunk;
-        }
-      });
-
-      child.on('close', (code) => {
-        clearTimeout(timeoutId);
-        if (!killed) {
-          resolve({
-            exitCode: code || 0,
-            stdout,
-            stderr
-          });
-        }
+      child.stderr?.on('data', (data: Buffer) => {
+        if (stderr.length < maxBytes) stderr += data.toString();
       });
 
       child.on('error', (error) => {
-        clearTimeout(timeoutId);
+        clearTimeout(timer);
         reject(error);
       });
-    });
-  }
 
-  /**
-   * Sanitize and validate file paths
-   */
-  private async sanitizePath(filePath: string, cwd?: string): Promise<string> {
-    const workDir = cwd || this.config.workDir;
-    const resolvedPath = path.resolve(workDir, filePath);
-    
-    // Ensure path is within allowed working directory
-    if (!resolvedPath.startsWith(path.resolve(workDir))) {
-      throw new Error(`Path ${filePath} is outside allowed working directory`);
-    }
-    
-    // Check if file exists
-    try {
-      await fs.access(resolvedPath);
-    } catch {
-      throw new Error(`File not found: ${filePath}`);
-    }
-    
-    return resolvedPath;
+      child.on('close', (code, signal) => {
+        clearTimeout(timer);
+        resolve({ exitCode: code ?? 1, signal: signal ?? null, stdout, stderr, timedOut });
+      });
+    });
   }
 }

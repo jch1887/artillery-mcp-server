@@ -1,22 +1,21 @@
 # Artillery MCP Server
 
-A production-ready Model Context Protocol (MCP) server that exposes safe, ergonomic tools for running and inspecting Artillery load tests from MCP-compatible clients like Claude Desktop and Cursor.
+A Model Context Protocol (MCP) server that exposes tools for running and inspecting Artillery load tests from MCP-compatible clients such as Claude Desktop and Cursor. See the [changelog](CHANGELOG.md) for what changed in each release.
 
 ## Features
 
-- **Safe Execution**: Only executes Artillery CLI with validated parameters
+- **Sandboxed Execution**: Only the Artillery CLI is run, every path stays inside the working directory, and the child environment is an explicit allowlist
 - **Multiple Test Modes**: Run tests from files, inline configs, or quick HTTP tests
 - **Saved Configurations**: Save, manage, and reuse Artillery test configs by name
 - **Interactive Wizard**: Step-by-step guided test building with preset test types
 - **Preset Tests**: Run smoke/baseline/soak/spike tests with minimal configuration
 - **Regression Detection**: Compare test results against baseline with configurable thresholds
-- **Comprehensive Output**: JSON results, HTML reports, and structured summaries
-- **Dry-Run Validation**: Validate configurations without execution
-- **Security**: Path sanitization, timeout controls, and output size limits
+- **Structured Output**: JSON results, parsed summaries, and a listing of past result files
+- **Timeouts and Limits**: Runs are killed (including worker processes) when they exceed the timeout, and captured output is capped
 
 ## Prerequisites
 
-- Node.js 18+ 
+- Node.js 22.18 or later (required by current Artillery releases)
 - Artillery CLI installed and accessible via PATH
 - MCP-compatible client (Claude Desktop, Cursor, etc.)
 
@@ -194,23 +193,25 @@ Add to your Cursor settings:
 
 Run an Artillery test from a config file.
 
+All paths are resolved against `ARTILLERY_WORKDIR` and must stay inside it.
+
 **Parameters:**
 - `path` (required): Path to Artillery config file
 - `outputJson` (optional): Path for JSON results output
-- `reportHtml` (optional): Path for HTML report output
-- `env` (optional): Environment variables
-- `cwd` (optional): Working directory
-- `validateOnly` (optional): Dry-run validation only
+- `reportHtml` (optional): Path for HTML report output (see the note below)
+- `env` (optional): Extra environment variables. `PATH`, `NODE_OPTIONS` and similar cannot be overridden
+- `cwd` (optional): Directory to run from, inside the working directory
+- `validateOnly` (optional): Return without running. Artillery has no validation mode, so the config is not checked
 
 **Example:**
 ```json
 {
-  "path": "/path/to/test.yml",
-  "outputJson": "/path/to/results.json",
-  "reportHtml": "/path/to/report.html",
-  "validateOnly": false
+  "path": "tests/api.yml",
+  "outputJson": "results/api.json"
 }
 ```
+
+**Note on HTML reports:** recent Artillery releases have removed the `report` command. When `reportHtml` is set the server still tries it after the run and, if no file appears, returns the JSON path with a warning instead of failing.
 
 ### 2. `run_test_inline`
 
@@ -222,9 +223,9 @@ Run an Artillery test from inline configuration.
 - `configText` (required): Artillery config as YAML/JSON string
 - `outputJson` (optional): Path for JSON results output
 - `reportHtml` (optional): Path for HTML report output
-- `env` (optional): Environment variables
-- `cwd` (optional): Working directory
-- `validateOnly` (optional): Dry-run validation only
+- `env` (optional): Extra environment variables
+- `cwd` (optional): Directory to run from, inside the working directory
+- `validateOnly` (optional): Return without running
 
 **Example:**
 ```yaml
@@ -237,7 +238,7 @@ configText: |
         arrivalCount: 3
     defaults:
       headers:
-        User-Agent: 'Artillery-MCP-Server/1.0.0'
+        User-Agent: 'Artillery-MCP-Server/3.0.0'
   
   scenarios:
     - name: "Load Test"
@@ -254,24 +255,29 @@ configText: |
 
 ### 3. `quick_test`
 
-Run a quick HTTP test without full configuration.
+Run a quick HTTP test without writing a config. The server generates a one-request scenario, so `count` is the exact number of requests sent, and `rate` with `duration` gives a steady arrival rate. The generated script is returned as `config` alongside the usual result.
 
 **Parameters:**
 - `target` (required): URL to test
-- `rate` (optional): Requests per second
-- `duration` (optional): Test duration (e.g., "1m")
-- `count` (optional): Total request count
+- `rate` (optional): Requests per second (default 10, ignored when `count` is set)
+- `duration` (optional): Test duration such as "30s" or "1m" (default 10s)
+- `count` (optional): Total number of requests to send
 - `method` (optional): HTTP method (default: GET)
 - `headers` (optional): HTTP headers
-- `body` (optional): Request body
+- `body` (optional): Request body. JSON text is sent as `application/json`
+- `insecure` (optional): Skip TLS certificate verification (default false)
+- `keepResults` (optional): Keep the JSON results file (default false)
+- `outputJson` (optional): Write results to this path instead of an auto-generated one
 
 **Example:**
 ```json
 {
-  "target": "https://api.example.com/health",
-  "rate": 10,
-  "duration": "30s",
-  "method": "GET"
+  "target": "https://api.example.com/items",
+  "method": "POST",
+  "headers": { "Authorization": "Bearer token" },
+  "body": "{\"name\": \"demo\"}",
+  "count": 50,
+  "duration": "10s"
 }
 ```
 
@@ -284,8 +290,8 @@ Report server capabilities and configuration.
 **Returns:**
 ```json
 {
-  "artilleryVersion": "2.0.0",
-  "serverVersion": "1.0.0",
+  "artilleryVersion": "2.0.34",
+  "serverVersion": "3.0.0",
   "transports": ["stdio"],
   "limits": {
     "maxTimeoutMs": 1800000,
@@ -301,15 +307,48 @@ Report server capabilities and configuration.
 
 ### 5. `parse_results`
 
-Parse and summarize Artillery JSON results.
+Parse and summarise Artillery JSON results.
 
 **Parameters:**
-- `jsonPath` (required): Path to Artillery JSON results file
+- `jsonPath` (required): Path to the results file, inside the working directory
 
 **Example:**
 ```json
 {
-  "jsonPath": "/path/to/results.json"
+  "jsonPath": "results/api.json"
+}
+```
+
+**Returns:**
+```json
+{
+  "summary": {
+    "requestsTotal": 150,
+    "responsesTotal": 148,
+    "rpsAvg": 4.6,
+    "latencyMs": { "min": 12, "max": 410, "mean": 90, "p50": 85, "p95": 120, "p99": 180 },
+    "httpCodes": { "200": 148 },
+    "errors": { "ETIMEDOUT": 2 },
+    "errorsTotal": 2,
+    "vusers": { "created": 150, "completed": 148, "failed": 2 }
+  },
+  "scenarios": [{ "name": "Smoke Test", "count": 150 }],
+  "metadata": { "startedAt": "2025-01-21T10:00:00.000Z", "finishedAt": "2025-01-21T10:00:32.000Z", "durationMs": 32000, "totalRequests": 150 }
+}
+```
+
+### 6. `list_results`
+
+List JSON result files under the working directory, newest first.
+
+**Parameters:**
+- `limit` (optional): Maximum number of files to return (default 100)
+
+**Returns:**
+```json
+{
+  "count": 1,
+  "results": [{ "path": "/path/to/workdir/results/api.json", "sizeBytes": 20480, "modifiedAt": "2025-01-21T10:00:32.000Z" }]
 }
 ```
 
@@ -319,7 +358,7 @@ Parse and summarize Artillery JSON results.
 
 The server supports saving and managing reusable Artillery configurations. Saved configs are stored in `$ARTILLERY_WORKDIR/saved-configs/` and can be referenced by name.
 
-### 6. `save_config`
+### 7. `save_config`
 
 Save a new Artillery configuration or update an existing one.
 
@@ -327,7 +366,7 @@ Save a new Artillery configuration or update an existing one.
 - `name` (required): Unique name for the config (alphanumeric, hyphens, underscores)
 - `content` (required): Artillery configuration as YAML or JSON string
 - `description` (optional): Description of what this config tests
-- `tags` (optional): Array of tags for organization (e.g., `["smoke", "api"]`)
+- `tags` (optional): Array of tags for organisation (e.g., `["smoke", "api"]`)
 
 **Example:**
 ```json
@@ -355,7 +394,7 @@ Save a new Artillery configuration or update an existing one.
 }
 ```
 
-### 7. `list_configs`
+### 8. `list_configs`
 
 List all saved Artillery configurations.
 
@@ -390,7 +429,7 @@ List all saved Artillery configurations.
 }
 ```
 
-### 8. `get_config`
+### 9. `get_config`
 
 Retrieve a saved Artillery configuration by name.
 
@@ -419,7 +458,7 @@ Retrieve a saved Artillery configuration by name.
 }
 ```
 
-### 9. `delete_config`
+### 10. `delete_config`
 
 Delete a saved Artillery configuration.
 
@@ -445,7 +484,7 @@ Delete a saved Artillery configuration.
 }
 ```
 
-### 10. `run_saved_config`
+### 11. `run_saved_config`
 
 Run an Artillery test using a previously saved configuration.
 
@@ -479,9 +518,13 @@ Run an Artillery test using a previously saved configuration.
     "jsonResultPath": "/path/to/results.json",
     "summary": {
       "requestsTotal": 150,
+      "responsesTotal": 150,
       "rpsAvg": 4.6,
-      "latencyMs": { "p50": 85, "p95": 120, "p99": 180 },
-      "errors": {}
+      "latencyMs": { "min": 12, "max": 410, "mean": 90, "p50": 85, "p95": 120, "p99": 180 },
+      "httpCodes": { "200": 150 },
+      "errors": {},
+      "errorsTotal": 0,
+      "vusers": { "created": 150, "completed": 150, "failed": 0 }
     }
   }
 }
@@ -512,7 +555,7 @@ Run an Artillery test using a previously saved configuration.
 
 The server provides an interactive wizard to help build Artillery test configurations step-by-step. The wizard state is fully serializable, making it easy for AI agents to drive.
 
-### 11. `wizard_start`
+### 12. `wizard_start`
 
 Start a new wizard session.
 
@@ -542,7 +585,7 @@ Start a new wizard session.
 }
 ```
 
-### 12. `wizard_step`
+### 13. `wizard_step`
 
 Advance the wizard based on user input.
 
@@ -594,7 +637,7 @@ Advance the wizard based on user input.
 }
 ```
 
-### 13. `wizard_finalize`
+### 14. `wizard_finalize`
 
 Generate the final config and optionally save/run it.
 
@@ -682,7 +725,7 @@ Generate the final config and optionally save/run it.
 
 The server provides tools for streamlined testing and regression detection.
 
-### 14. `run_preset_test`
+### 15. `run_preset_test`
 
 Run a preset test type with minimal configuration - just provide a target URL and preset type.
 
@@ -733,7 +776,7 @@ Run a preset test type with minimal configuration - just provide a target URL an
 }
 ```
 
-### 15. `compare_results`
+### 16. `compare_results`
 
 Compare two Artillery test results to detect performance regressions.
 
@@ -744,12 +787,15 @@ Compare two Artillery test results to detect performance regressions.
   - `maxLatencyIncrease`: Max latency increase (default: 0.2 = 20%)
   - `maxErrorRateIncrease`: Max error rate increase (default: 0.01 = 1%)
   - `minThroughputRatio`: Min throughput as ratio of baseline (default: 0.9 = 90%)
+  - `latencyPercentiles`: Which of `p50`, `p95`, `p99` the latency threshold applies to (default: all three)
+
+Error rates are computed from Artillery's `errors.*` counters divided by total requests.
 
 **Example:**
 ```json
 {
-  "baselinePath": "/results/baseline.json",
-  "currentPath": "/results/current.json",
+  "baselinePath": "results/baseline.json",
+  "currentPath": "results/current.json",
   "thresholds": {
     "maxLatencyIncrease": 0.1,
     "minThroughputRatio": 0.95
@@ -772,7 +818,7 @@ Compare two Artillery test results to detect performance regressions.
     },
     "throughput": { "baseline": 10, "current": 9.5, "changePercent": -5, "status": "unchanged" },
     "errorRate": { "baseline": 1, "current": 2, "changePercent": 100, "status": "degraded" },
-    "failures": ["P95 latency increased by 40.0%, exceeds threshold of 20%"]
+    "failures": ["p95 latency increased by 40.0%, exceeds threshold of 20%", "p99 latency increased by 33.3%, exceeds threshold of 20%"]
   }
 }
 ```
@@ -810,7 +856,7 @@ config:
       arrivalRate: 0
   defaults:
     headers:
-      User-Agent: 'Artillery-MCP-Server/1.0.0'
+      User-Agent: 'Artillery-MCP-Server/3.0.0'
 
 scenarios:
   - name: "Basic HTTP test"
@@ -900,19 +946,19 @@ scenarios:
       "errors": {
         "ETIMEDOUT": 12,
         "ECONNRESET": 3
-      }
+      },
+      "errorsTotal": 15
     },
     "scenarios": [
       {
         "name": "Basic HTTP test",
-        "count": 10,
-        "successRate": 100,
-        "avgLatency": 180
+        "count": 12345
       }
     ],
     "metadata": {
-      "timestamp": "2025-01-21T10:00:00.000Z",
-      "duration": "1m",
+      "startedAt": "2025-01-21T10:00:00.000Z",
+      "finishedAt": "2025-01-21T10:01:00.000Z",
+      "durationMs": 60000,
       "totalRequests": 12345
     }
   }
@@ -921,16 +967,20 @@ scenarios:
 
 ## Safety Features
 
-- **Path Sanitization**: Prevents directory traversal attacks
-- **Timeout Controls**: Automatic process termination for hung tests
-- **Output Limits**: Configurable size caps for stdout/stderr capture
-- **Environment Isolation**: Controlled environment variable injection
-- **Binary Validation**: Only executes known Artillery binary
-- **Working Directory Restriction**: Tests cannot escape configured workdir
+The server is designed to be driven by an LLM, so it limits what a tool call can reach:
+
+- **Working directory boundary**: every path (config files, `cwd`, `outputJson`, `reportHtml`, results files) is resolved against `ARTILLERY_WORKDIR` and rejected if it ends up outside it. The check uses `path.relative` and follows symlinks, so `cwd: "/"`, `../`, look-alike sibling directories and symlinks that point elsewhere all fail.
+- **Environment allowlist**: Artillery runs with `PATH`, `HOME`, temp, locale, proxy and TLS variables plus any `ARTILLERY_*` values from the server environment. Caller-supplied `env` entries are added on top, but `PATH`, `NODE_OPTIONS`, `NODE_PATH`, `LD_PRELOAD`, `DYLD_*` and similar cannot be overridden.
+- **Timeouts**: a run that exceeds `ARTILLERY_TIMEOUT_MS` has its whole process group killed, including Artillery worker processes, and the result reports `timedOut: true` with a non-zero exit code.
+- **Output limits**: captured stdout and stderr are capped at `ARTILLERY_MAX_OUTPUT_MB`.
+- **Only Artillery runs**: the server spawns the detected Artillery binary directly, never a shell.
+- **TLS verification stays on**: `quick_test` only skips certificate checks when `insecure: true` is passed.
+
+What the server does not do: it does not inspect the Artillery config itself. A config can still target any host, use Artillery processors or plugins, and read files that Artillery can read. Point `ARTILLERY_WORKDIR` at a dedicated directory and treat the tools as having the same reach as the user account running the server.
 
 ## Error Handling
 
-All tools return structured error responses:
+Failed calls are returned with the MCP `isError` flag set, and the text content carries a structured error:
 
 ```json
 {
@@ -960,13 +1010,16 @@ Common error codes:
 
 ```
 src/
-├── server.ts              # Main server entrypoint
+├── server.ts              # Main server entrypoint and tool registration
 ├── types.ts               # TypeScript type definitions
+├── version.ts             # Server version read from package.json
 ├── lib/
 │   ├── artillery.ts       # Artillery CLI wrapper
+│   ├── paths.ts           # Working directory boundary checks
+│   ├── results.ts         # Results summarisation shared by the tools
 │   ├── config-storage.ts  # Saved configs storage layer
 │   └── wizard.ts          # Interactive wizard state machine
-└── tools/                 # MCP tool implementations (15 tools)
+└── tools/                 # MCP tool implementations (16 tools)
     ├── index.ts
     ├── run-test-from-file.ts
     ├── run-test-inline.ts
@@ -975,6 +1028,7 @@ src/
     ├── quick-test.ts
     ├── list-capabilities.ts
     ├── parse-results.ts
+    ├── list-results.ts
     ├── compare-results.ts     # Result comparison
     ├── save-config.ts
     ├── list-configs.ts
@@ -994,9 +1048,12 @@ npm run dev
 # Production build
 npm run build
 
-# Type checking
-npx tsc --noEmit
+# Lint and type check
+npm run lint
+npm run typecheck
 ```
+
+The test suite includes a smoke test that runs against a real Artillery binary. It is skipped automatically when `artillery` is not on `PATH`.
 
 ### Testing
 
@@ -1054,33 +1111,20 @@ export ARTILLERY_MAX_OUTPUT_MB=100
 # Check for excessive logging in test config
 ```
 
-## Version 2.0 Features
+## Upgrading
 
-This version introduces significant new capabilities while maintaining backward compatibility:
+### From 2.x to 3.0
 
-### New in 2.0
+Version 3.0 tightens the sandbox and fixes result parsing. Points to check when upgrading:
 
-| Feature | Tools | Description |
-|---------|-------|-------------|
-| **Saved Configs** | `save_config`, `list_configs`, `get_config`, `delete_config`, `run_saved_config` | Save and reuse Artillery configurations by name |
-| **Interactive Wizard** | `wizard_start`, `wizard_step`, `wizard_finalize` | Step-by-step guided test building |
-| **Preset Tests** | `run_preset_test` | Run smoke/baseline/soak/spike with minimal config |
-| **Result Comparison** | `compare_results` | Detect regressions against baseline |
+- Every path must be inside `ARTILLERY_WORKDIR`. Relative paths are resolved against it, so `results/run.json` works and `/tmp/run.json` does not.
+- `summary.errors` is now a map of Artillery `errors.*` counters and `summary.errorsTotal` is their sum. Summaries also carry `responsesTotal`, `httpCodes` and `vusers`.
+- `parse_results` returns `scenarios` as `{ name, count }` and `metadata` as `{ startedAt, finishedAt, durationMs, totalRequests }`.
+- `quick_test` sends exactly `count` requests, honours `method`, `headers` and `body`, and verifies TLS unless `insecure: true` is set. Result files are deleted after the run unless `keepResults` or `outputJson` is set.
+- `compare_results` gates on p50, p95 and p99 by default. Pass `thresholds.latencyPercentiles: ["p95"]` for the old behaviour.
+- Node.js 22.18 or later is required.
 
-### Migrating from 1.x
-
-**No breaking changes** - all existing tools work exactly as before:
-- `run_test_from_file` ✅
-- `run_test_inline` ✅
-- `quick_test` ✅
-- `list_capabilities` ✅
-- `parse_results` ✅
-
-**New capabilities are additive:**
-- Use `run_preset_test` for quick tests without config files
-- Use the wizard tools for guided configuration building
-- Use `compare_results` for CI/CD regression detection
-- Use saved configs for team collaboration and reproducibility
+The full list is in the [changelog](CHANGELOG.md).
 
 ### Test Type Presets
 

@@ -394,7 +394,7 @@ describe('Saved Config Tools', () => {
 
       expect(result.status).toBe('ok');
       expect(result.data?.exitCode).toBe(0);
-      expect(result.data?.logsTail).toContain('validated successfully');
+      expect(result.data?.logsTail).toContain('nothing was executed');
       expect(mockArtillery.runTestFromFile).not.toHaveBeenCalled();
     });
 

@@ -6,6 +6,9 @@
 
 import { MCPTool, ToolOutput, ArtillerySummary } from '../types.js';
 import { ArtilleryWrapper } from '../lib/artillery.js';
+import { summariseResults } from '../lib/results.js';
+
+export type LatencyPercentile = 'p50' | 'p95' | 'p99';
 
 /** Comparison thresholds */
 export interface ComparisonThresholds {
@@ -15,6 +18,8 @@ export interface ComparisonThresholds {
   maxErrorRateIncrease?: number;
   /** Min required throughput (as percentage of baseline, e.g., 0.9 = 90%) */
   minThroughputRatio?: number;
+  /** Percentiles the latency threshold applies to (default: all three) */
+  latencyPercentiles?: LatencyPercentile[];
 }
 
 /** Metric comparison result */
@@ -51,9 +56,10 @@ export interface ComparisonResult {
 }
 
 const DEFAULT_THRESHOLDS: Required<ComparisonThresholds> = {
-  maxLatencyIncrease: 0.2, // 20% increase allowed
-  maxErrorRateIncrease: 0.01, // 1 percentage point increase allowed
-  minThroughputRatio: 0.9 // Must maintain 90% of baseline throughput
+  maxLatencyIncrease: 0.2,
+  maxErrorRateIncrease: 0.01,
+  minThroughputRatio: 0.9,
+  latencyPercentiles: ['p50', 'p95', 'p99']
 };
 
 export class CompareResultsTool implements MCPTool {
@@ -84,6 +90,11 @@ export class CompareResultsTool implements MCPTool {
           minThroughputRatio: {
             type: 'number',
             description: 'Min throughput as ratio of baseline (default: 0.9 = 90%)'
+          },
+          latencyPercentiles: {
+            type: 'array',
+            items: { type: 'string', enum: ['p50', 'p95', 'p99'] },
+            description: 'Percentiles the latency threshold applies to (default: all three)'
           }
         },
         description: 'Optional thresholds for pass/fail determination'
@@ -146,7 +157,10 @@ export class CompareResultsTool implements MCPTool {
       // Merge thresholds with defaults
       const thresholds: Required<ComparisonThresholds> = {
         ...DEFAULT_THRESHOLDS,
-        ...args.thresholds
+        ...args.thresholds,
+        latencyPercentiles: args.thresholds?.latencyPercentiles?.length
+          ? args.thresholds.latencyPercentiles
+          : DEFAULT_THRESHOLDS.latencyPercentiles
       };
 
       // Compare metrics
@@ -171,46 +185,32 @@ export class CompareResultsTool implements MCPTool {
     }
   }
 
-  private extractSummary(results: Record<string, unknown>): ArtillerySummary & { errorCount: number } {
-    const aggregate = (results.aggregate || {}) as Record<string, unknown>;
-    const counters = (aggregate.counters || {}) as Record<string, number>;
-    const rates = (aggregate.rates || {}) as Record<string, number>;
-    const summaries = (aggregate.summaries || {}) as Record<string, Record<string, number>>;
-
-    const requestsTotal = counters['http.requests'] || 0;
-    const errorCount = counters['http.errors'] || 0;
-
-    return {
-      requestsTotal,
-      rpsAvg: rates['http.request_rate'] || 0,
-      latencyMs: {
-        p50: summaries['http.response_time']?.p50 || 0,
-        p95: summaries['http.response_time']?.p95 || 0,
-        p99: summaries['http.response_time']?.p99 || 0
-      },
-      errors: { total: errorCount },
-      errorCount
-    };
+  private extractSummary(results: unknown): ArtillerySummary {
+    return summariseResults(results);
   }
 
   private compareMetrics(
-    baseline: ArtillerySummary & { errorCount: number },
-    current: ArtillerySummary & { errorCount: number },
+    baseline: ArtillerySummary,
+    current: ArtillerySummary,
     thresholds: Required<ComparisonThresholds>
   ): ComparisonResult {
     const failures: string[] = [];
 
-    // Compare latency
-    const latencyP50 = this.compareMetric(baseline.latencyMs.p50, current.latencyMs.p50, 'lower');
-    const latencyP95 = this.compareMetric(baseline.latencyMs.p95, current.latencyMs.p95, 'lower');
-    const latencyP99 = this.compareMetric(baseline.latencyMs.p99, current.latencyMs.p99, 'lower');
+    const latency = {
+      p50: this.compareMetric(baseline.latencyMs.p50, current.latencyMs.p50, 'lower'),
+      p95: this.compareMetric(baseline.latencyMs.p95, current.latencyMs.p95, 'lower'),
+      p99: this.compareMetric(baseline.latencyMs.p99, current.latencyMs.p99, 'lower')
+    };
+    const latencyP95 = latency.p95;
 
-    // Check latency threshold (using p95)
-    if (latencyP95.changePercent > thresholds.maxLatencyIncrease * 100) {
-      failures.push(
-        `P95 latency increased by ${latencyP95.changePercent.toFixed(1)}%, ` +
-        `exceeds threshold of ${thresholds.maxLatencyIncrease * 100}%`
-      );
+    for (const percentile of thresholds.latencyPercentiles) {
+      const comparison = latency[percentile];
+      if (comparison && comparison.changePercent > thresholds.maxLatencyIncrease * 100) {
+        failures.push(
+          `${percentile} latency increased by ${comparison.changePercent.toFixed(1)}%, ` +
+          `exceeds threshold of ${thresholds.maxLatencyIncrease * 100}%`
+        );
+      }
     }
 
     // Compare throughput
@@ -228,11 +228,11 @@ export class CompareResultsTool implements MCPTool {
     }
 
     // Compare error rate
-    const baselineErrorRate = baseline.requestsTotal > 0 
-      ? (baseline.errorCount / baseline.requestsTotal) * 100 
+    const baselineErrorRate = baseline.requestsTotal > 0
+      ? (baseline.errorsTotal / baseline.requestsTotal) * 100
       : 0;
-    const currentErrorRate = current.requestsTotal > 0 
-      ? (current.errorCount / current.requestsTotal) * 100 
+    const currentErrorRate = current.requestsTotal > 0
+      ? (current.errorsTotal / current.requestsTotal) * 100
       : 0;
     const errorRate = this.compareMetric(baselineErrorRate, currentErrorRate, 'lower');
 
@@ -268,11 +268,7 @@ export class CompareResultsTool implements MCPTool {
     return {
       passed,
       summary,
-      latency: {
-        p50: latencyP50,
-        p95: latencyP95,
-        p99: latencyP99
-      },
+      latency,
       throughput,
       errorRate,
       totalRequests,
@@ -310,7 +306,3 @@ export class CompareResultsTool implements MCPTool {
     };
   }
 }
-
-
-
-
